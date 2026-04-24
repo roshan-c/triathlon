@@ -1,0 +1,17 @@
+.next
+node_modules
+.DS_Store
+.env
+.env.*
+!.env.example
+coverage
+convex/_generated
+dist
+cli-dist
+.wrangler
+tsconfig.tsbuildinfo
+wrangler.jsonc
+sqlite.db
+sqlite.db-shm
+sqlite.db-wal
+.opencode

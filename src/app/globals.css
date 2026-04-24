@@ -1,0 +1,182 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --font-body: var(--font-display);
+  --line-height: 1.25rem;
+  --radius: 0.625rem;
+  --border-thickness: 2px;
+
+  --background: #f2f4f1;
+  --background-alt: #e7ebe4;
+  --card: #fbfdf9;
+  --foreground: #111512;
+  --muted-foreground: #5f6a61;
+  --border: #c9d1c5;
+  --ring: #ff4eb8;
+
+  --accent: #ff4eb8;
+  --accent-soft: #ffe5f4;
+  --accent-text: #7d235d;
+
+  --ok-soft: #dff5e6;
+  --ok-text: #2b7e4a;
+  --warn-soft: #fff2d7;
+  --warn-text: #9a6a17;
+  --danger-soft: #ffe4e8;
+  --danger-text: #b53040;
+
+  --shadow-ink: rgba(17, 21, 18, 0.18);
+  --grid-ink: rgba(17, 21, 18, 0.07);
+
+  --selected-bg: color-mix(in oklab, var(--accent) 16%, var(--card));
+  --selected-glow: color-mix(in oklab, var(--accent) 38%, transparent);
+
+  --chart-accent: #ff4eb8;
+  --chart-neutral: #111512;
+  --chart-secondary: #647065;
+  --chart-grid: rgba(17, 21, 18, 0.16);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0f1011;
+  --background-alt: #151718;
+  --card: #1b1d1e;
+  --foreground: #e6e8e7;
+  --muted-foreground: #9ba09d;
+  --border: #34383a;
+  --ring: #ff4eb8;
+
+  --accent: #ff4eb8;
+  --accent-soft: #2b1a24;
+  --accent-text: #f2c4df;
+
+  --ok-soft: #202628;
+  --ok-text: #b8cbbe;
+  --warn-soft: #262427;
+  --warn-text: #d1c1cd;
+  --danger-soft: #2a2126;
+  --danger-text: #ddafc8;
+
+  --shadow-ink: rgba(0, 0, 0, 0.35);
+  --grid-ink: rgba(237, 246, 237, 0.06);
+
+  --selected-bg: color-mix(in oklab, var(--accent) 18%, var(--card));
+  --selected-glow: color-mix(in oklab, var(--accent) 44%, transparent);
+
+  --chart-accent: #ff4eb8;
+  --chart-neutral: #d8dcda;
+  --chart-secondary: #8f9692;
+  --chart-grid: rgba(230, 232, 231, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-body), ui-monospace, monospace;
+  color: var(--foreground);
+  background:
+    linear-gradient(transparent 95%, var(--grid-ink) 95%),
+    linear-gradient(90deg, transparent 95%, var(--grid-ink) 95%),
+    linear-gradient(180deg, var(--background), var(--background-alt));
+  background-size: 24px 24px, 24px 24px, auto;
+}
+
+a {
+  color: inherit;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: var(--border-thickness) solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+::placeholder {
+  color: var(--muted-foreground);
+  opacity: 1;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 25%, transparent);
+}
+
+button {
+  border: var(--border-thickness) solid var(--foreground);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--foreground);
+  color: var(--background);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+button:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow-ink);
+}
+
+.panel {
+  border: var(--border-thickness) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: 5px 5px 0 var(--shadow-ink);
+}
+
+.pill {
+  @apply inline-flex items-center px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--card) 92%, var(--background));
+}
+
+.btn-ghost {
+  border: var(--border-thickness) solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.btn-ghost:hover {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+}
+
+.btn-accent {
+  border-color: var(--accent);
+  background: var(--selected-bg);
+  color: var(--foreground);
+  box-shadow: 0 0 0 2px var(--selected-glow);
+}
+
+.btn-accent:hover {
+  background: color-mix(in oklab, var(--accent) 24%, var(--card));
+}
+
+.is-selected {
+  border-color: var(--accent) !important;
+  background: var(--selected-bg) !important;
+  color: var(--foreground) !important;
+  box-shadow: 0 0 0 2px var(--selected-glow);
+}
+
+.muted {
+  color: var(--muted-foreground);
+}

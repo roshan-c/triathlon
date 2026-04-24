@@ -1,0 +1,51 @@
+{
+  "name": "agile-board",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "tri": "cli-dist/index.js"
+  },
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "start": "vinext start",
+    "deploy:prod": "vinext deploy",
+    "lint": "vinext lint",
+    "typecheck": "tsc --noEmit",
+    "cli:build": "tsc -p tsconfig.cli.json",
+    "tri": "npm run -s cli:build && node cli-dist/index.js",
+    "prepare": "npm run -s cli:build",
+    "convex:dev": "convex dev",
+    "convex:codegen": "convex codegen",
+    "auth:generate": "npx @better-auth/cli@latest generate --yes --config ./convex/betterAuth/auth.ts --output ./convex/betterAuth/schema.ts"
+  },
+  "dependencies": {
+    "@convex-dev/better-auth": "0.10.13",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@excalidraw/excalidraw": "^0.18.0",
+    "better-auth": "1.4.9",
+    "commander": "^14.0.1",
+    "convex": "^1.28.0",
+    "date-fns": "^4.1.0",
+    "next": "^16.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.3.0",
+    "vinext": "^0.0.21"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.26.0",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "^10.4.22",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4",
+    "wrangler": "^4.70.0"
+  }
+}

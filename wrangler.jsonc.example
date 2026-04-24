@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "<your-worker-name>",
+  "compatibility_date": "2026-03-05",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "<your-domain>",
+      "custom_domain": true
+    }
+  ],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "NEXT_PUBLIC_SITE_URL": "https://<your-domain>",
+    "NEXT_PUBLIC_CONVEX_URL": "https://<your-deployment>.convex.cloud",
+    "NEXT_PUBLIC_CONVEX_SITE_URL": "https://<your-deployment>.convex.site"
+  },
+  "main": "./worker/index.ts",
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS"
+  },
+  "images": {
+    "binding": "IMAGES"
+  }
+}
