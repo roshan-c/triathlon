@@ -67,6 +67,9 @@ curl -sS "$TRI_AGENT_URL" \
 - `boards.moveCard` (use `toColumnId` or `toColumnName`)
 - `boards.deleteCard`
 - `boards.attachCardToSprint`
+- `boards.requestReview`
+- `boards.approveReview`
+- `boards.rejectReview`
 - `sprints.list`
 - `sprints.create`
 - `sprints.activate`
@@ -74,9 +77,20 @@ curl -sS "$TRI_AGENT_URL" \
 - `metrics.forSprint`
 - `metrics.velocityHistory`
 
+## Review workflow
+
+Cards must be approved before moving to Done. The typical flow:
+
+1. Create or update a card
+2. Call `boards.requestReview` when ready for review
+3. Reviewer calls `boards.approveReview` or `boards.rejectReview`
+4. Only after approval can the card move to Done via `boards.moveCard`
+
 ## Error handling guidance
 
 - `UNAUTHORIZED`: missing/invalid key
 - `TOOL_FORBIDDEN`: tool not in allowlist
 - `INVALID_ARGS`: payload validation failed
 - `TOOL_ERROR`: backend action failed (inspect message)
+- `REVIEW_REQUIRED`: card is awaiting review; call `boards.approveReview` first
+- `REVIEW_REJECTED`: card was rejected; re-request review after addressing feedback

@@ -1,8 +1,11 @@
+# THIS WAS 100% VIBE CODED. I NEEDED IT FOR ONE PROJECT AND DIDN'T WANT TO PUT ANY TIME INTO IT. NO I HAVEN'T READ THE CODE AT ALL. I DON'T CARE. IT'S A TOOL. IT WORKS REALLY WELL.
+
 # Triathlon
 
 Triathlon is a lightweight Trello + Jira alternative for small teams, built with Vinext, Convex, and Better Auth.
 
 It includes:
+
 - Kanban board with drag-and-drop
 - Sprint planning
 - Agile metrics (velocity, burndown, throughput, cycle/lead time)
@@ -28,6 +31,7 @@ It includes:
 - Default board columns on project creation:
   - Backlog, Todo, In Progress, Review, Done
 - Card CRUD + drag movement tracking (`CardEvent`)
+- Review gate: cards must be approved before moving to Done
 - Sprint create / activate / complete
 - Metrics dashboard + whiteboard
 
@@ -100,6 +104,7 @@ npx convex env set BETTER_AUTH_SECRET "<prod-secret>"
 ### Frontend
 
 Set public vars to production values:
+
 - `NEXT_PUBLIC_SITE_URL=https://<your-domain>`
 - `NEXT_PUBLIC_CONVEX_URL=https://<prod-deployment>.convex.cloud`
 - `NEXT_PUBLIC_CONVEX_SITE_URL=https://<prod-deployment>.convex.site`
@@ -160,6 +165,9 @@ tri board snapshot --json
 ```bash
 tri cards create --title "Define agent goals" --column-name Backlog --points 3 --priority high
 tri cards move --id <cardId> --to-column-name "In Progress"
+tri cards request-review --id <cardId>
+tri cards approve-review --id <cardId>
+tri cards reject-review --id <cardId>
 tri cards delete --id <cardId>          # prompts
 tri cards delete --id <cardId> --force  # no prompt
 tri sprints list
@@ -221,6 +229,20 @@ Each key is scoped to one project via `projectId`.
 }
 ```
 
+### Review workflow
+
+Cards must be approved before moving to Done:
+
+1. Create or update a card
+2. Call `boards.requestReview` when ready
+3. Reviewer calls `boards.approveReview` or `boards.rejectReview`
+4. Only approved cards can move to Done via `boards.moveCard`
+
+Errors:
+
+- `REVIEW_REQUIRED` — card is awaiting review
+- `REVIEW_REJECTED` — card was rejected; re-request after fixes
+
 ### Allowed tools
 
 - `system.describe`
@@ -232,6 +254,9 @@ Each key is scoped to one project via `projectId`.
 - `boards.moveCard` (`toColumnId` or `toColumnName`)
 - `boards.deleteCard`
 - `boards.attachCardToSprint`
+- `boards.requestReview`
+- `boards.approveReview`
+- `boards.rejectReview`
 - `sprints.list`
 - `sprints.create`
 - `sprints.activate`

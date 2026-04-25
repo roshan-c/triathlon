@@ -30,6 +30,9 @@ export const getBoard = query({
               sprintId: v.optional(v.id("sprints")),
               assigneeId: v.optional(v.id("users")),
               labels: v.array(v.string()),
+              reviewStatus: v.optional(v.union(v.literal("none"), v.literal("requested"), v.literal("approved"), v.literal("rejected"))),
+              reviewedBy: v.optional(v.id("users")),
+              reviewedAt: v.optional(v.number()),
               createdAt: v.number(),
               updatedAt: v.number()
             })
@@ -79,6 +82,9 @@ export const getBoard = query({
             sprintId: card.sprintId,
             assigneeId: card.assigneeId,
             labels: card.labels,
+            reviewStatus: card.reviewStatus,
+            reviewedBy: card.reviewedBy,
+            reviewedAt: card.reviewedAt,
             createdAt: card.createdAt,
             updatedAt: card.updatedAt
           }))
@@ -144,6 +150,9 @@ export const createCard = mutation({
       priority: args.priority ?? "medium",
       assigneeId,
       labels: args.labels ?? [],
+      reviewStatus: "none",
+      reviewedBy: undefined,
+      reviewedAt: undefined,
       createdBy: user._id,
       createdAt: now,
       updatedAt: now
@@ -238,6 +247,23 @@ export const moveCard = mutation({
       return null;
     }
 
+    const reviewStatus = card.reviewStatus ?? "none";
+
+    if (destinationColumn.name.toLowerCase() === "done") {
+      if (reviewStatus === "requested") {
+        throw new ConvexError({
+          code: "REVIEW_REQUIRED",
+          message: "This task is awaiting review. Approve the review before moving to Done."
+        });
+      }
+      if (reviewStatus === "rejected") {
+        throw new ConvexError({
+          code: "REVIEW_REJECTED",
+          message: "This task was rejected in review. Re-request review or address feedback before moving to Done."
+        });
+      }
+    }
+
     const now = Date.now();
     const fromColumnId = card.columnId;
 
@@ -325,6 +351,87 @@ export const activity = query({
       fromColumnId: event.fromColumnId,
       toColumnId: event.toColumnId
     }));
+  }
+});
+
+export const requestReview = mutation({
+  args: {
+    projectId: v.id("projects"),
+    externalId: v.string(),
+    cardId: v.id("cards")
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ensureProjectMember(ctx, args.projectId, args.externalId);
+    const board = await getBoardByProjectId(ctx, args.projectId);
+    const card = await ctx.db.get(args.cardId);
+
+    if (!card || card.boardId !== board._id) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Card not found." });
+    }
+
+    await ctx.db.patch(args.cardId, {
+      reviewStatus: "requested",
+      updatedAt: Date.now()
+    });
+
+    return null;
+  }
+});
+
+export const approveReview = mutation({
+  args: {
+    projectId: v.id("projects"),
+    externalId: v.string(),
+    cardId: v.id("cards")
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { user } = await ensureProjectMember(ctx, args.projectId, args.externalId);
+    const board = await getBoardByProjectId(ctx, args.projectId);
+    const card = await ctx.db.get(args.cardId);
+
+    if (!card || card.boardId !== board._id) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Card not found." });
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.cardId, {
+      reviewStatus: "approved",
+      reviewedBy: user._id,
+      reviewedAt: now,
+      updatedAt: now
+    });
+
+    return null;
+  }
+});
+
+export const rejectReview = mutation({
+  args: {
+    projectId: v.id("projects"),
+    externalId: v.string(),
+    cardId: v.id("cards")
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { user } = await ensureProjectMember(ctx, args.projectId, args.externalId);
+    const board = await getBoardByProjectId(ctx, args.projectId);
+    const card = await ctx.db.get(args.cardId);
+
+    if (!card || card.boardId !== board._id) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Card not found." });
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.cardId, {
+      reviewStatus: "rejected",
+      reviewedBy: user._id,
+      reviewedAt: now,
+      updatedAt: now
+    });
+
+    return null;
   }
 });
 

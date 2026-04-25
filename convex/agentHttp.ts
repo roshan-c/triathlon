@@ -199,6 +199,21 @@ const TOOL_VALIDATORS: Record<string, ArgValidator> = {
       sprintId: optionalString(obj.sprintId, "sprintId")
     };
   },
+  "boards.requestReview": (input) => {
+    const obj = ensureObject(input);
+    assertNoExtraKeys(obj, ["cardId"]);
+    return { cardId: requireString(obj.cardId, "cardId") };
+  },
+  "boards.approveReview": (input) => {
+    const obj = ensureObject(input);
+    assertNoExtraKeys(obj, ["cardId"]);
+    return { cardId: requireString(obj.cardId, "cardId") };
+  },
+  "boards.rejectReview": (input) => {
+    const obj = ensureObject(input);
+    assertNoExtraKeys(obj, ["cardId"]);
+    return { cardId: requireString(obj.cardId, "cardId") };
+  },
   "sprints.list": (input) => {
     const obj = ensureObject(input);
     assertNoExtraKeys(obj, []);
@@ -414,7 +429,7 @@ export const agent = httpAction(async (ctx: any, request: Request) => {
     switch (tool) {
       case "system.describe":
         result = {
-          version: "1.1",
+          version: "1.2",
           projectScope: "single_project_per_key",
           tools: Array.from(TOOL_ALLOWLIST).sort()
         };
@@ -498,6 +513,27 @@ export const agent = httpAction(async (ctx: any, request: Request) => {
           externalId,
           cardId: args.cardId as string,
           sprintId: (args.sprintId as string) || undefined
+        });
+        break;
+      case "boards.requestReview":
+        result = await ctx.runMutation(api.boards.requestReview, {
+          projectId,
+          externalId,
+          cardId: args.cardId as string
+        });
+        break;
+      case "boards.approveReview":
+        result = await ctx.runMutation(api.boards.approveReview, {
+          projectId,
+          externalId,
+          cardId: args.cardId as string
+        });
+        break;
+      case "boards.rejectReview":
+        result = await ctx.runMutation(api.boards.rejectReview, {
+          projectId,
+          externalId,
+          cardId: args.cardId as string
         });
         break;
       case "sprints.list":

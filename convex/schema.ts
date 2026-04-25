@@ -50,6 +50,9 @@ export default defineSchema({
     priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
     assigneeId: v.optional(v.id("users")),
     labels: v.array(v.string()),
+    reviewStatus: v.optional(v.union(v.literal("none"), v.literal("requested"), v.literal("approved"), v.literal("rejected"))),
+    reviewedBy: v.optional(v.id("users")),
+    reviewedAt: v.optional(v.number()),
     createdBy: v.id("users"),
     createdAt: v.number(),
     updatedAt: v.number()

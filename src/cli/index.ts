@@ -273,6 +273,39 @@ cardsCmd
     });
   });
 
+cardsCmd
+  .command("request-review")
+  .description("Request review for a card")
+  .requiredOption("--id <cardId>", "Card id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("boards.requestReview", { cardId: opts.id });
+      printResult(result, config.json, "Review requested");
+    });
+  });
+
+cardsCmd
+  .command("approve-review")
+  .description("Approve review for a card")
+  .requiredOption("--id <cardId>", "Card id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("boards.approveReview", { cardId: opts.id });
+      printResult(result, config.json, "Review approved");
+    });
+  });
+
+cardsCmd
+  .command("reject-review")
+  .description("Reject review for a card")
+  .requiredOption("--id <cardId>", "Card id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("boards.rejectReview", { cardId: opts.id });
+      printResult(result, config.json, "Review rejected");
+    });
+  });
+
 const sprintsCmd = program.command("sprints").description("Sprint operations");
 
 sprintsCmd

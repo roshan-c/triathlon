@@ -19,6 +19,25 @@ import { PriorityBadge } from "@/components/priority-badge";
 import { useAppContext } from "@/components/app-context";
 import { cvx, Priority } from "@/lib/convex";
 
+function ReviewBadge({ status }: { status: string }) {
+  if (status === "none") return null;
+  const styles: Record<string, string> = {
+    requested: "bg-yellow-900/40 text-yellow-300 border-yellow-700/50",
+    approved: "bg-green-900/40 text-green-300 border-green-700/50",
+    rejected: "bg-red-900/40 text-red-300 border-red-700/50"
+  };
+  const labels: Record<string, string> = {
+    requested: "review",
+    approved: "approved",
+    rejected: "rejected"
+  };
+  return (
+    <span className={`inline-block rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${styles[status] ?? ""}`}>
+      {labels[status] ?? status}
+    </span>
+  );
+}
+
 function CardPreview({ card }: { card: any }) {
   return (
     <div className="panel w-[280px] p-3 text-left">
@@ -27,6 +46,11 @@ function CardPreview({ card }: { card: any }) {
         <span>{card.storyPoints} pts</span>
         <PriorityBadge priority={card.priority as Priority} />
       </div>
+      {(card.reviewStatus ?? "none") !== "none" ? (
+        <div className="mt-1.5">
+          <ReviewBadge status={card.reviewStatus ?? "none"} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -58,6 +82,11 @@ function DraggableCard({ card, onSelect }: { card: any; onSelect: (cardId: strin
         <span>{card.storyPoints} pts</span>
         <PriorityBadge priority={card.priority as Priority} />
       </div>
+      {(card.reviewStatus ?? "none") !== "none" ? (
+        <div className="mt-1.5">
+          <ReviewBadge status={card.reviewStatus ?? "none"} />
+        </div>
+      ) : null}
     </button>
   );
 }
@@ -105,6 +134,9 @@ export default function BoardPage() {
   const updateCard = useMutation(cvx.boards.updateCard);
   const deleteCard = useMutation(cvx.boards.deleteCard);
   const attachCardToSprint = useMutation(cvx.boards.attachCardToSprint);
+  const requestReview = useMutation(cvx.boards.requestReview);
+  const approveReview = useMutation(cvx.boards.approveReview);
+  const rejectReview = useMutation(cvx.boards.rejectReview);
 
   const [newCardTitle, setNewCardTitle] = useState("");
   const [newCardDescription, setNewCardDescription] = useState("");
@@ -181,12 +213,23 @@ export default function BoardPage() {
       return;
     }
 
-    await moveCard({
-      projectId: project.projectId,
-      externalId,
-      cardId,
-      toColumnId
-    });
+    try {
+      await moveCard({
+        projectId: project.projectId,
+        externalId,
+        cardId,
+        toColumnId
+      });
+    } catch (error: any) {
+      const code = error?.data?.code ?? error?.code;
+      if (code === "REVIEW_REQUIRED") {
+        window.alert("This task is awaiting review. Approve the review before moving to Done.");
+      } else if (code === "REVIEW_REJECTED") {
+        window.alert("This task was rejected in review. Re-request review or address feedback before moving to Done.");
+      } else {
+        throw error;
+      }
+    }
   };
 
   const submitNewCard = async (event: FormEvent<HTMLFormElement>) => {
@@ -458,6 +501,67 @@ export default function BoardPage() {
                   ))}
                 </select>
               </label>
+
+              <div className="text-sm">
+                <p className="muted mb-1">Review</p>
+                <div className="rounded-md border-2 border-[var(--border)] bg-[var(--card)] p-3">
+                  {(selectedCard.reviewStatus ?? "none") === "none" ? (
+                    <button
+                      type="button"
+                      className="btn-accent w-full rounded-md px-3 py-2 text-xs font-semibold uppercase"
+                      onClick={() =>
+                        void requestReview({
+                          projectId: project.projectId,
+                          externalId,
+                          cardId: selectedCard._id
+                        })
+                      }
+                    >
+                      Request Review
+                    </button>
+                  ) : (selectedCard.reviewStatus ?? "none") === "requested" ? (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="flex-1 rounded-md border-2 border-green-700/50 bg-green-900/30 px-3 py-2 text-xs font-semibold uppercase text-green-300"
+                        onClick={() =>
+                          void approveReview({
+                            projectId: project.projectId,
+                            externalId,
+                            cardId: selectedCard._id
+                          })
+                        }
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="flex-1 rounded-md border-2 border-red-700/50 bg-red-900/30 px-3 py-2 text-xs font-semibold uppercase text-red-300"
+                        onClick={() =>
+                          void rejectReview({
+                            projectId: project.projectId,
+                            externalId,
+                            cardId: selectedCard._id
+                          })
+                        }
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold uppercase text-[var(--foreground)]">
+                        {(selectedCard.reviewStatus ?? "none") === "approved" ? "Approved" : "Rejected"}
+                      </p>
+                      {selectedCard.reviewedAt ? (
+                        <p className="muted text-xs">
+                          {new Date(selectedCard.reviewedAt).toLocaleString()}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </div>
 
               <div className="text-sm">
                 <p className="muted mb-1">Recent activity</p>

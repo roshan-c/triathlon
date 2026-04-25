@@ -18,6 +18,9 @@ export const cvx = {
     moveCard: "boards:moveCard" as any,
     deleteCard: "boards:deleteCard" as any,
     attachCardToSprint: "boards:attachCardToSprint" as any,
+    requestReview: "boards:requestReview" as any,
+    approveReview: "boards:approveReview" as any,
+    rejectReview: "boards:rejectReview" as any,
     activity: "boards:activity" as any
   },
   sprints: {
