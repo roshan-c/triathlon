@@ -3,6 +3,7 @@ node_modules
 .DS_Store
 .env
 .env.*
+.superpowers/
 !.env.example
 coverage
 convex/_generated
@@ -15,3 +16,5 @@ sqlite.db
 sqlite.db-shm
 sqlite.db-wal
 .opencode
+release/
+electron/dist/
