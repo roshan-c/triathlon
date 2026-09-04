@@ -7,5 +7,9 @@ const classes: Record<Priority, string> = {
 };
 
 export function PriorityBadge({ priority }: { priority: Priority }) {
-  return <span className={`pill ${classes[priority]}`}>{priority}</span>;
+  return (
+    <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium capitalize ${classes[priority]}`}>
+      {priority}
+    </span>
+  );
 }

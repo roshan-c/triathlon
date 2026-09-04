@@ -14,6 +14,7 @@ import {
   YAxis
 } from "recharts";
 import { useAppContext } from "@/components/app-context";
+import { PageHeader, StatCard } from "@/components/ui";
 import { cvx } from "@/lib/convex";
 
 export default function MetricsPage() {
@@ -60,102 +61,89 @@ export default function MetricsPage() {
   const chartGrid = "var(--chart-grid)";
   const chartText = "var(--muted-foreground)";
   const tooltipStyle = {
-    background: "var(--card)",
-    border: "2px solid var(--border)",
-    borderRadius: "8px",
+    background: "var(--surface)",
+    border: "1px solid var(--border)",
+    borderRadius: "10px",
+    boxShadow: "var(--shadow-md)",
     color: "var(--foreground)",
     fontSize: "12px"
   };
 
   return (
-    <div className="space-y-4">
-      <section className="panel p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="font-display text-2xl font-bold uppercase text-[var(--foreground)]">Metrics Dashboard</h1>
-          <select
-            value={selectedSprintId}
-            onChange={(event) => setSelectedSprintId(event.target.value)}
-            className="rounded-md px-3 py-2 text-sm"
-          >
-            {(sprints ?? []).length === 0 ? <option value="">No sprints</option> : null}
-            {(sprints ?? []).map((sprint: any) => (
-              <option key={sprint._id} value={sprint._id}>
-                {sprint.name}
-              </option>
-            ))}
-          </select>
-        </div>
+    <div className="space-y-5">
+      <PageHeader title="Metrics" description="Velocity, throughput, and cycle time computed from real ticket movement.">
+        <select
+          value={selectedSprintId}
+          onChange={(event) => setSelectedSprintId(event.target.value)}
+          aria-label="Sprint"
+          className="text-sm"
+        >
+          {(sprints ?? []).length === 0 ? <option value="">No sprints</option> : null}
+          {(sprints ?? []).map((sprint: any) => (
+            <option key={sprint._id} value={sprint._id}>
+              {sprint.name}
+            </option>
+          ))}
+        </select>
+      </PageHeader>
 
-        {metrics ? (
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <article className="rounded-md border-2 border-[var(--border)] bg-[var(--card)] p-3">
-              <p className="muted text-xs uppercase">Velocity</p>
-              <p className="mt-1 text-xl font-semibold text-[var(--foreground)]">{metrics.velocity} pts</p>
-            </article>
-            <article className="rounded-md border-2 border-[var(--border)] bg-[var(--card)] p-3">
-              <p className="muted text-xs uppercase">Throughput</p>
-              <p className="mt-1 text-xl font-semibold text-[var(--foreground)]">{metrics.throughput} tasks</p>
-            </article>
-            <article className="rounded-md border-2 border-[var(--border)] bg-[var(--card)] p-3">
-              <p className="muted text-xs uppercase">Avg Cycle Time</p>
-              <p className="mt-1 text-xl font-semibold text-[var(--foreground)]">{metrics.averageCycleTimeHours.toFixed(1)} h</p>
-            </article>
-            <article className="rounded-md border-2 border-[var(--border)] bg-[var(--card)] p-3">
-              <p className="muted text-xs uppercase">Avg Lead Time</p>
-              <p className="mt-1 text-xl font-semibold text-[var(--foreground)]">{metrics.averageLeadTimeHours.toFixed(1)} h</p>
-            </article>
-          </div>
-        ) : (
-          <p className="muted mt-4 text-sm">Select a sprint to load metrics.</p>
-        )}
-      </section>
+      {metrics ? (
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Velocity" value={`${metrics.velocity} pts`} />
+          <StatCard label="Throughput" value={`${metrics.throughput} tasks`} />
+          <StatCard label="Avg cycle time" value={`${metrics.averageCycleTimeHours.toFixed(1)} h`} />
+          <StatCard label="Avg lead time" value={`${metrics.averageLeadTimeHours.toFixed(1)} h`} />
+        </section>
+      ) : (
+        <p className="text-sm text-[var(--muted-foreground)]">Select a sprint to load metrics.</p>
+      )}
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        <article className="panel p-4">
-          <h2 className="font-display text-lg font-semibold uppercase text-[var(--foreground)]">Burndown</h2>
-          <div className="mt-3 h-72">
-            <ResponsiveContainer>
-              <LineChart data={metrics?.burndown ?? []}>
-                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                <XAxis dataKey="day" fontSize={11} stroke={chartText} />
-                <YAxis allowDecimals={false} stroke={chartText} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Line type="monotone" dataKey="remainingPoints" stroke="var(--chart-accent)" strokeWidth={2} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </article>
-
-        <article className="panel p-4">
-          <h2 className="font-display text-lg font-semibold uppercase text-[var(--foreground)]">Tasks Completed Per Day</h2>
-          <div className="mt-3 h-72">
-            <ResponsiveContainer>
-              <BarChart data={metrics?.tasksCompletedPerDay ?? []}>
-                <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-                <XAxis dataKey="day" fontSize={11} stroke={chartText} />
-                <YAxis allowDecimals={false} stroke={chartText} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Bar dataKey="completed" fill="var(--chart-secondary)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </article>
-      </section>
-
-      <section className="panel p-4">
-        <h2 className="font-display text-lg font-semibold uppercase text-[var(--foreground)]">Velocity by Sprint</h2>
-        <div className="mt-3 h-72">
+      <section className="grid gap-5 lg:grid-cols-2">
+        <ChartPanel title="Burndown">
           <ResponsiveContainer>
-            <BarChart data={velocityHistory ?? []}>
-              <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} />
-              <XAxis dataKey="sprintName" fontSize={11} stroke={chartText} />
-              <YAxis allowDecimals={false} stroke={chartText} />
+            <LineChart data={metrics?.burndown ?? []}>
+              <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} vertical={false} />
+              <XAxis dataKey="day" fontSize={11} stroke={chartText} tickLine={false} axisLine={false} />
+              <YAxis allowDecimals={false} stroke={chartText} tickLine={false} axisLine={false} />
               <Tooltip contentStyle={tooltipStyle} />
-              <Bar dataKey="velocity" fill="var(--chart-neutral)" radius={[4, 4, 0, 0]} />
+              <Line type="monotone" dataKey="remainingPoints" stroke="var(--chart-accent)" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartPanel>
+
+        <ChartPanel title="Tasks completed per day">
+          <ResponsiveContainer>
+            <BarChart data={metrics?.tasksCompletedPerDay ?? []}>
+              <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} vertical={false} />
+              <XAxis dataKey="day" fontSize={11} stroke={chartText} tickLine={false} axisLine={false} />
+              <YAxis allowDecimals={false} stroke={chartText} tickLine={false} axisLine={false} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--chart-grid)" }} />
+              <Bar dataKey="completed" fill="var(--chart-secondary)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
-        </div>
+        </ChartPanel>
       </section>
+
+      <ChartPanel title="Velocity by sprint">
+        <ResponsiveContainer>
+          <BarChart data={velocityHistory ?? []}>
+            <CartesianGrid strokeDasharray="3 3" stroke={chartGrid} vertical={false} />
+            <XAxis dataKey="sprintName" fontSize={11} stroke={chartText} tickLine={false} axisLine={false} />
+            <YAxis allowDecimals={false} stroke={chartText} tickLine={false} axisLine={false} />
+            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--chart-grid)" }} />
+            <Bar dataKey="velocity" fill="var(--chart-neutral)" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartPanel>
     </div>
+  );
+}
+
+function ChartPanel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-sm)]">
+      <h2 className="text-sm font-semibold tracking-tight text-[var(--foreground)]">{title}</h2>
+      <div className="mt-4 h-72">{children}</div>
+    </section>
   );
 }

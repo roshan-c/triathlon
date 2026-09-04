@@ -1,4 +1,21 @@
-import type { GatewayRequest, GatewayResponse } from "./types.js";
+import type { GatewayRequest } from "./types.js";
+import { z } from "zod";
+import type { JSONValue } from "convex/values";
+import type { GatewayArgs } from "./types.js";
+
+const gatewayResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    requestId: z.string().optional(),
+    result: z.json().optional(),
+    error: z
+      .object({
+        code: z.string(),
+        message: z.string()
+      })
+      .optional()
+  })
+  .strict();
 
 export class GatewayClientError extends Error {
   constructor(
@@ -18,7 +35,7 @@ export class GatewayClient {
     private readonly agentKey: string
   ) {}
 
-  async call<T = unknown>(tool: string, args: Record<string, unknown> = {}, requestId?: string) {
+  async call<T extends JSONValue = JSONValue>(tool: string, args: GatewayArgs = {}, requestId?: string) {
     const payload: GatewayRequest = {
       tool,
       args,
@@ -34,9 +51,9 @@ export class GatewayClient {
       body: JSON.stringify(payload)
     });
 
-    let body: GatewayResponse<T>;
+    let body: ReturnType<typeof gatewayResponseSchema.parse>;
     try {
-      body = (await response.json()) as GatewayResponse<T>;
+      body = gatewayResponseSchema.parse(await response.json());
     } catch {
       throw new GatewayClientError(
         "Gateway returned non-JSON response.",
@@ -54,6 +71,8 @@ export class GatewayClient {
       );
     }
 
+    // SAFETY: The response envelope is validated at the I/O boundary; each caller supplies
+    // the result type associated with the requested gateway tool.
     return body.result as T;
   }
 }

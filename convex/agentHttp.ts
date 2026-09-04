@@ -1,261 +1,298 @@
 import { httpAction } from "./_generated/server";
 import { api } from "./_generated/api";
 import { internal } from "./_generated/api";
+import type { GenericId as Id, JSONValue } from "convex/values";
+import { z } from "zod";
 
-type AgentKeyConfig = {
-  keyId: string;
-  key: string;
-  keyLabel?: string;
-  projectId: string;
-  externalId: string;
-  enabled?: boolean;
-};
+type ProjectId = Id<"projects">;
 
-type AgentRequest = {
-  tool: string;
-  args?: Record<string, unknown>;
-  requestId?: string;
-};
+const agentKeyConfigSchema = z.object({
+  keyId: z.string(),
+  key: z.string(),
+  keyLabel: z.string().optional(),
+  projectId: z.string(),
+  externalId: z.string(),
+  enabled: z.boolean().optional()
+});
+
+type AgentKeyConfig = z.infer<typeof agentKeyConfigSchema>;
 
 type AgentResponse = {
   ok: boolean;
   requestId?: string;
-  result?: unknown;
+  result?: JSONValue;
   error?: {
     code: string;
     message: string;
   };
 };
 
-const PRIORITY_VALUES = new Set(["low", "medium", "high"]);
+// SAFETY: Agent-supplied identifier strings are Convex document Ids in
+// serialized form. `Id<T>` is the same string at the type level, and the
+// Convex mutation boundary re-validates the target table for every call.
+const asColumnId = (id: string) => id as Id<"columns">;
+// SAFETY: Same contract as `asColumnId`, for ticket Ids.
+const asTicketId = (id: string) => id as Id<"tickets">;
+// SAFETY: Same contract as `asColumnId`, for sprint Ids.
+const asSprintId = (id: string) => id as Id<"sprints">;
 
-type ArgValidator = (input: unknown) => Record<string, unknown>;
+// --- Request schema: each tool's arguments are decoded here, at the I/O
+// boundary, into a discriminated union keyed by the tool name. ---
 
-function ensureObject(input: unknown) {
-  if (input === undefined || input === null) {
-    return {} as Record<string, unknown>;
-  }
-  if (typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Arguments must be an object.");
-  }
-  return input as Record<string, unknown>;
-}
+const optionalText = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().optional()
+);
+const optionalFiniteNumber = z.preprocess(
+  (value) => (value === null ? undefined : value),
+  z.number().finite().optional()
+);
+const optionalLabelList = z.preprocess(
+  (value) => (value === null ? undefined : value),
+  z.array(z.string()).optional()
+);
+const optionalPriority = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.enum(["low", "medium", "high"]).optional()
+);
+const nonEmptyText = (field: string) =>
+  z
+    .string()
+    .min(1, `${field} must be a non-empty string.`)
+    .refine((value) => value.trim() !== "", `${field} must be a non-empty string.`);
 
-function assertNoExtraKeys(obj: Record<string, unknown>, allowed: string[]) {
-  for (const key of Object.keys(obj)) {
-    if (!allowed.includes(key)) {
-      throw new Error(`Unexpected argument: ${key}.`);
-    }
-  }
-}
+const noArgs = z.object({}).strict();
 
-function requireString(value: unknown, name: string) {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new Error(`${name} must be a non-empty string.`);
-  }
-  return value;
-}
+const KNOWN_TOOLS = new Set<string>([
+  "system.describe",
+  "projects.getSummary",
+  "projects.members",
+  "tickets.board",
+  "tickets.create",
+  "tickets.get",
+  "tickets.list",
+  "tickets.update",
+  "tickets.move",
+  "tickets.comment",
+  "tickets.close",
+  "tickets.frontier",
+  "tickets.addBlockedBy",
+  "tickets.removeBlockedBy",
+  "tickets.requestReview",
+  "tickets.approveReview",
+  "tickets.rejectReview",
+  "tickets.delete",
+  "tickets.attachToSprint",
+  "sprints.list",
+  "sprints.create",
+  "sprints.activate",
+  "sprints.complete",
+  "metrics.forSprint",
+  "metrics.velocityHistory"
+]);
 
-function optionalString(value: unknown, name: string) {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (value === null) {
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    throw new Error(`${name} must be a string.`);
-  }
-  return value === "" ? undefined : value;
-}
+// Catch-all: any tool name outside the allowlist. Kept as a union member so
+// unknown tools keep their distinct 403 TOOL_FORBIDDEN response.
+const unknownToolSchema = z.object({
+  tool: z.string().refine((tool) => !KNOWN_TOOLS.has(tool)),
+  args: z.record(z.string(), z.any()).optional(),
+  requestId: z.string().optional()
+});
 
-function optionalNumber(value: unknown, name: string) {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
-    throw new Error(`${name} must be a finite number.`);
-  }
-  return value;
-}
+const requestSchema = z.union([
+  z.object({
+    tool: z.literal("system.describe"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("projects.getSummary"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("projects.members"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.board"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.list"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.frontier"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.get"),
+    args: z.object({ ticketId: nonEmptyText("ticketId") }).strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.create"),
+    args: z
+      .object({
+        columnId: optionalText,
+        columnName: optionalText,
+        title: nonEmptyText("title"),
+        description: optionalText,
+        storyPoints: optionalFiniteNumber,
+        sprintId: optionalText,
+        assigneeExternalId: optionalText,
+        priority: optionalPriority,
+        labels: optionalLabelList
+      })
+      .strict()
+      .refine((args) => args.columnId || args.columnName, {
+        message: "columnId or columnName is required."
+      }),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.update"),
+    args: z
+      .object({
+        ticketId: nonEmptyText("ticketId"),
+        title: optionalText,
+        description: optionalText,
+        storyPoints: optionalFiniteNumber,
+        priority: optionalPriority,
+        labels: optionalLabelList,
+        assigneeExternalId: optionalText
+      })
+      .strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.move"),
+    args: z
+      .object({
+        ticketId: nonEmptyText("ticketId"),
+        toColumnId: optionalText,
+        toColumnName: optionalText
+      })
+      .strict()
+      .refine((args) => args.toColumnId || args.toColumnName, {
+        message: "toColumnId or toColumnName is required."
+      }),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.comment"),
+    args: z.object({ ticketId: nonEmptyText("ticketId"), body: nonEmptyText("body") }).strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.close"),
+    args: z
+      .object({ ticketId: nonEmptyText("ticketId"), comment: nonEmptyText("comment") })
+      .strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.addBlockedBy"),
+    args: z
+      .object({
+        ticketId: nonEmptyText("ticketId"),
+        blockerId: nonEmptyText("blockerId")
+      })
+      .strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.removeBlockedBy"),
+    args: z
+      .object({
+        ticketId: nonEmptyText("ticketId"),
+        blockerId: nonEmptyText("blockerId")
+      })
+      .strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.enum([
+      "tickets.requestReview",
+      "tickets.approveReview",
+      "tickets.rejectReview",
+      "tickets.delete"
+    ]),
+    args: z.object({ ticketId: nonEmptyText("ticketId") }).strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("tickets.attachToSprint"),
+    args: z.object({ ticketId: nonEmptyText("ticketId"), sprintId: optionalText }).strict(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("sprints.list"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("sprints.create"),
+    args: z
+      .object({
+        name: nonEmptyText("name"),
+        startDate: optionalFiniteNumber,
+        endDate: optionalFiniteNumber
+      })
+      .strict()
+      .optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("sprints.activate"),
+    args: z
+      .object({
+        sprintId: nonEmptyText("sprintId")
+      })
+      .strict()
+      .optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("sprints.complete"),
+    args: z
+      .object({
+        sprintId: nonEmptyText("sprintId")
+      })
+      .strict()
+      .optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("metrics.forSprint"),
+    args: z
+      .object({
+        sprintId: nonEmptyText("sprintId")
+      })
+      .strict()
+      .optional(),
+    requestId: z.string().optional()
+  }),
+  z.object({
+    tool: z.literal("metrics.velocityHistory"),
+    args: noArgs.optional(),
+    requestId: z.string().optional()
+  }),
+  unknownToolSchema
+]);
 
-function optionalStringArray(value: unknown, name: string) {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (!Array.isArray(value)) {
-    throw new Error(`${name} must be an array of strings.`);
-  }
-  if (value.some((entry) => typeof entry !== "string")) {
-    throw new Error(`${name} must be an array of strings.`);
-  }
-  return value as string[];
-}
-
-const TOOL_VALIDATORS: Record<string, ArgValidator> = {
-  "system.describe": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, []);
-    return {};
-  },
-  "projects.getSummary": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, []);
-    return {};
-  },
-
-  "projects.members": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, []);
-    return {};
-  },
-  "boards.getSnapshot": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, []);
-    return {};
-  },
-  "boards.createCard": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, [
-      "columnId",
-      "columnName",
-      "title",
-      "description",
-      "storyPoints",
-      "sprintId",
-      "assigneeExternalId",
-      "priority",
-      "labels"
-    ]);
-    const title = requireString(obj.title, "title");
-    const priority = optionalString(obj.priority, "priority");
-    if (priority && !PRIORITY_VALUES.has(priority)) {
-      throw new Error("priority must be low, medium, or high.");
-    }
-    return {
-      columnId: optionalString(obj.columnId, "columnId"),
-      columnName: optionalString(obj.columnName, "columnName"),
-      title,
-      description: optionalString(obj.description, "description"),
-      storyPoints: optionalNumber(obj.storyPoints, "storyPoints"),
-      sprintId: optionalString(obj.sprintId, "sprintId"),
-      assigneeExternalId: optionalString(obj.assigneeExternalId, "assigneeExternalId"),
-      priority,
-      labels: optionalStringArray(obj.labels, "labels")
-    };
-  },
-  "boards.updateCard": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, [
-      "cardId",
-      "title",
-      "description",
-      "storyPoints",
-      "priority",
-      "labels",
-      "assigneeExternalId"
-    ]);
-    const cardId = requireString(obj.cardId, "cardId");
-    const priority = optionalString(obj.priority, "priority");
-    if (priority && !PRIORITY_VALUES.has(priority)) {
-      throw new Error("priority must be low, medium, or high.");
-    }
-    return {
-      cardId,
-      title: optionalString(obj.title, "title"),
-      description: optionalString(obj.description, "description"),
-      storyPoints: optionalNumber(obj.storyPoints, "storyPoints"),
-      priority,
-      labels: optionalStringArray(obj.labels, "labels"),
-      assigneeExternalId: optionalString(obj.assigneeExternalId, "assigneeExternalId")
-    };
-  },
-  "boards.moveCard": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["cardId", "toColumnId", "toColumnName"]);
-    const toColumnId = optionalString(obj.toColumnId, "toColumnId");
-    const toColumnName = optionalString(obj.toColumnName, "toColumnName");
-
-    if (!toColumnId && !toColumnName) {
-      throw new Error("toColumnId or toColumnName is required.");
-    }
-
-    return {
-      cardId: requireString(obj.cardId, "cardId"),
-      toColumnId,
-      toColumnName
-    };
-  },
-  "boards.deleteCard": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["cardId"]);
-    return { cardId: requireString(obj.cardId, "cardId") };
-  },
-  "boards.attachCardToSprint": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["cardId", "sprintId"]);
-    return {
-      cardId: requireString(obj.cardId, "cardId"),
-      sprintId: optionalString(obj.sprintId, "sprintId")
-    };
-  },
-  "boards.requestReview": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["cardId"]);
-    return { cardId: requireString(obj.cardId, "cardId") };
-  },
-  "boards.approveReview": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["cardId"]);
-    return { cardId: requireString(obj.cardId, "cardId") };
-  },
-  "boards.rejectReview": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["cardId"]);
-    return { cardId: requireString(obj.cardId, "cardId") };
-  },
-  "sprints.list": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, []);
-    return {};
-  },
-  "sprints.create": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["name", "startDate", "endDate"]);
-    const startDate = optionalNumber(obj.startDate, "startDate");
-    const endDate = optionalNumber(obj.endDate, "endDate");
-    if (startDate === undefined || endDate === undefined) {
-      throw new Error("startDate and endDate are required.");
-    }
-    return {
-      name: requireString(obj.name, "name"),
-      startDate,
-      endDate
-    };
-  },
-  "sprints.activate": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["sprintId"]);
-    return { sprintId: requireString(obj.sprintId, "sprintId") };
-  },
-  "sprints.complete": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["sprintId"]);
-    return { sprintId: requireString(obj.sprintId, "sprintId") };
-  },
-  "metrics.forSprint": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, ["sprintId"]);
-    return { sprintId: requireString(obj.sprintId, "sprintId") };
-  },
-  "metrics.velocityHistory": (input) => {
-    const obj = ensureObject(input);
-    assertNoExtraKeys(obj, []);
-    return {};
-  }
-};
-
-const TOOL_ALLOWLIST = new Set(Object.keys(TOOL_VALIDATORS));
+// Used for the INVALID_TOOL / INVALID_ARGS audit paths, where the full
+// discriminated parse did not succeed but the raw fields still need reading.
+const looseBodySchema = z.object({
+  tool: z.string().min(1),
+  args: z.record(z.string(), z.any()).optional(),
+  requestId: z.string().optional()
+});
 
 function toResponse(status: number, body: AgentResponse) {
   return new Response(JSON.stringify(body), {
@@ -272,28 +309,29 @@ function getBearerToken(request: Request) {
   return header.slice(7).trim();
 }
 
-function loadAgentKeys() {
+function loadAgentKeys(): AgentKeyConfig[] {
   const raw = process.env.AGENT_KEYS_JSON;
   if (!raw) {
     throw new Error(
       "AGENT_KEYS_JSON is not configured. Set it in Convex env (Dashboard or `npx convex env set AGENT_KEYS_JSON <json>`)."
     );
   }
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error("AGENT_KEYS_JSON must be a JSON array.");
+  const parsed = z.array(agentKeyConfigSchema).safeParse(JSON.parse(raw));
+  if (!parsed.success) {
+    throw new Error("AGENT_KEYS_JSON must be a JSON array of agent key configs.");
   }
-  return parsed as AgentKeyConfig[];
+  return parsed.data;
 }
 
-function summarizeArgs(args: Record<string, unknown> | undefined) {
+function summarizeArgs(args: Record<string, JSONValue> | undefined) {
   if (!args) {
     return undefined;
   }
-  const redacted: Record<string, unknown> = {};
+  const redacted: Record<string, JSONValue> = {};
   for (const [key, value] of Object.entries(args)) {
-    if (typeof value === "string" && value.length > 80) {
-      redacted[key] = `${value.slice(0, 77)}...`;
+    const stringValue = z.string().safeParse(value);
+    if (stringValue.success && stringValue.data.length > 80) {
+      redacted[key] = `${stringValue.data.slice(0, 77)}...`;
     } else {
       redacted[key] = value;
     }
@@ -301,38 +339,44 @@ function summarizeArgs(args: Record<string, unknown> | undefined) {
   return JSON.stringify(redacted);
 }
 
-function summarizeResult(result: unknown) {
+function summarizeResult(result: JSONValue | undefined) {
   if (result === null || result === undefined) {
     return undefined;
   }
-  if (typeof result === "string") {
-    return result.length > 120 ? `${result.slice(0, 117)}...` : result;
+  const stringValue = z.string().safeParse(result);
+  if (stringValue.success) {
+    return stringValue.data.length > 120
+      ? `${stringValue.data.slice(0, 117)}...`
+      : stringValue.data;
   }
   if (Array.isArray(result)) {
     return `array(${result.length})`;
   }
-  if (typeof result === "object") {
-    const keys = Object.keys(result as Record<string, unknown>);
+  if (result instanceof Object) {
+    const keys = Object.keys(result);
     return `object(${keys.slice(0, 8).join(",")}${keys.length > 8 ? ",..." : ""})`;
   }
   return String(result);
 }
 
-function resolveColumnIdByName(board: any, columnName: string | undefined) {
+type BoardForNameLookup = {
+  columns?: readonly { _id: Id<"columns">; name: string }[];
+} | null;
+
+function resolveColumnIdByName(board: BoardForNameLookup, columnName: string | undefined) {
   if (!board || !columnName) {
     return undefined;
   }
   const match = board.columns?.find(
-    (column: any) =>
-      typeof column?.name === "string" && column.name.toLowerCase() === columnName.toLowerCase()
+    (column) => column.name.toLowerCase() === columnName.toLowerCase()
   );
-  return match?._id as string | undefined;
+  return match?._id;
 }
 
 async function recordAudit(ctx: any, payload: {
   keyId: string;
   keyLabel?: string;
-  projectId: string;
+  projectId: ProjectId;
   externalId: string;
   tool: string;
   requestId?: string;
@@ -344,7 +388,7 @@ async function recordAudit(ctx: any, payload: {
 }) {
   await ctx.runMutation(internal.agentAudit.insert, {
     ...payload,
-    projectId: payload.projectId as any,
+    projectId: payload.projectId,
     createdAt: Date.now()
   });
 }
@@ -372,237 +416,300 @@ export const agent = httpAction(async (ctx: any, request: Request) => {
     return toResponse(401, { ok: false, error: { code: "UNAUTHORIZED", message: "Invalid agent key." } });
   }
 
-  let body: AgentRequest;
+  // SAFETY: AGENT_KEYS_JSON stores each project's Convex database Id as a
+  // string; `Id<"projects">` is that same string at the type level.
+  const projectId = keyConfig.projectId as ProjectId;
+  const externalId = keyConfig.externalId;
+
+  let rawBody: unknown;
   try {
-    body = (await request.json()) as AgentRequest;
+    rawBody = await request.json();
   } catch {
     return toResponse(400, { ok: false, error: { code: "BAD_JSON", message: "Invalid JSON body." } });
   }
 
-  const tool = body?.tool;
-  if (!tool || typeof tool !== "string") {
+  const loose = looseBodySchema.safeParse(rawBody);
+  if (!loose.success) {
     return toResponse(400, { ok: false, error: { code: "INVALID_TOOL", message: "Tool name is required." } });
   }
 
-  if (!TOOL_ALLOWLIST.has(tool)) {
+  const parsed = requestSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    const message = parsed.error.issues[0]?.message ?? "Invalid tool arguments.";
     await recordAudit(ctx, {
       keyId: keyConfig.keyId,
       keyLabel: keyConfig.keyLabel,
-      projectId: keyConfig.projectId,
-      externalId: keyConfig.externalId,
-      tool,
-      requestId: body.requestId,
-      argsSummary: summarizeArgs(body.args),
-      success: false,
-      errorCode: "TOOL_FORBIDDEN",
-      errorMessage: "Tool not allowed."
-    });
-    return toResponse(403, { ok: false, requestId: body.requestId, error: { code: "TOOL_FORBIDDEN", message: "Tool not allowed." } });
-  }
-
-  let args: Record<string, unknown> = {};
-  try {
-    const validator = TOOL_VALIDATORS[tool];
-    args = validator(body.args ?? {});
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Invalid tool arguments.";
-    await recordAudit(ctx, {
-      keyId: keyConfig.keyId,
-      keyLabel: keyConfig.keyLabel,
-      projectId: keyConfig.projectId,
-      externalId: keyConfig.externalId,
-      tool,
-      requestId: body.requestId,
-      argsSummary: summarizeArgs(body.args),
+      projectId,
+      externalId,
+      tool: loose.data.tool,
+      requestId: loose.data.requestId,
+      argsSummary: summarizeArgs(loose.data.args),
       success: false,
       errorCode: "INVALID_ARGS",
       errorMessage: message
     });
-    return toResponse(400, { ok: false, requestId: body.requestId, error: { code: "INVALID_ARGS", message } });
+    return toResponse(400, { ok: false, requestId: loose.data.requestId, error: { code: "INVALID_ARGS", message } });
   }
 
-  try {
-    let result: unknown = null;
-    const projectId = keyConfig.projectId as any;
-    const externalId = keyConfig.externalId;
+  const requestId = parsed.data.requestId;
 
-    switch (tool) {
+  try {
+    let result: JSONValue | undefined = undefined;
+
+    switch (parsed.data.tool) {
       case "system.describe":
         result = {
-          version: "1.2",
+          version: "2.0",
           projectScope: "single_project_per_key",
-          tools: Array.from(TOOL_ALLOWLIST).sort()
+          tools: Array.from(KNOWN_TOOLS).sort()
         };
         break;
       case "projects.getSummary":
         result = await ctx.runQuery(api.projects.summary, { projectId, externalId });
         break;
-
       case "projects.members":
         result = await ctx.runQuery(api.projects.members, { projectId, externalId });
         break;
-      case "boards.getSnapshot":
-        result = await ctx.runQuery(api.boards.getBoard, { projectId, externalId });
+      case "tickets.board":
+        result = await ctx.runQuery(api.tickets.board, { projectId, externalId });
         break;
-      case "boards.createCard": {
-        let columnId = args.columnId as string | undefined;
+      case "tickets.list":
+        result = await ctx.runQuery(api.tickets.list, { projectId, externalId });
+        break;
+      case "tickets.frontier":
+        result = await ctx.runQuery(api.tickets.frontier, { projectId, externalId });
+        break;
+      case "tickets.get": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runQuery(api.tickets.get, {
+          projectId,
+          externalId,
+          ticketId: asTicketId(args.ticketId)
+        });
+        break;
+      }
+      case "tickets.create": {
+        const args = parsed.data.args ?? {};
+        let columnId = args.columnId;
         if (!columnId) {
-          const board = await ctx.runQuery(api.boards.getBoard, { projectId, externalId });
-          columnId = resolveColumnIdByName(board, args.columnName as string | undefined) ?? undefined;
+          const board = await ctx.runQuery(api.tickets.board, { projectId, externalId });
+          columnId = resolveColumnIdByName(board, args.columnName) ?? undefined;
         }
         if (!columnId) {
           throw new Error("Column not found. Provide columnId or a valid columnName.");
         }
-        result = await ctx.runMutation(api.boards.createCard, {
+        result = await ctx.runMutation(api.tickets.create, {
           projectId,
           externalId,
-          columnId,
-          title: args.title as string,
-          description: args.description as string | undefined,
-          storyPoints: args.storyPoints as number | undefined,
-          sprintId: args.sprintId as string | undefined,
-          assigneeExternalId: args.assigneeExternalId as string | undefined,
-          priority: args.priority as any,
-          labels: args.labels as string[] | undefined
+          columnId: asColumnId(columnId),
+          title: args.title,
+          description: args.description,
+          storyPoints: args.storyPoints,
+          sprintId: args.sprintId ? asSprintId(args.sprintId) : undefined,
+          assigneeExternalId: args.assigneeExternalId,
+          priority: args.priority,
+          labels: args.labels
         });
         break;
       }
-      case "boards.updateCard":
-        result = await ctx.runMutation(api.boards.updateCard, {
+      case "tickets.update": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.update, {
           projectId,
           externalId,
-          cardId: args.cardId as string,
-          title: args.title as string | undefined,
-          description: args.description as string | undefined,
-          storyPoints: args.storyPoints as number | undefined,
-          priority: args.priority as any,
-          labels: args.labels as string[] | undefined,
-          assigneeExternalId: args.assigneeExternalId as string | undefined
+          ticketId: asTicketId(args.ticketId),
+          title: args.title,
+          description: args.description,
+          storyPoints: args.storyPoints,
+          priority: args.priority,
+          labels: args.labels,
+          assigneeExternalId: args.assigneeExternalId
         });
         break;
-      case "boards.moveCard": {
-        let toColumnId = args.toColumnId as string | undefined;
+      }
+      case "tickets.move": {
+        const args = parsed.data.args ?? {};
+        let toColumnId = args.toColumnId;
 
         if (!toColumnId) {
-          const board = await ctx.runQuery(api.boards.getBoard, { projectId, externalId });
-          toColumnId = resolveColumnIdByName(board, args.toColumnName as string | undefined) ?? undefined;
+          const board = await ctx.runQuery(api.tickets.board, { projectId, externalId });
+          toColumnId = resolveColumnIdByName(board, args.toColumnName) ?? undefined;
         }
 
         if (!toColumnId) {
           throw new Error("Destination column not found. Provide toColumnId or a valid toColumnName.");
         }
 
-        result = await ctx.runMutation(api.boards.moveCard, {
+        result = await ctx.runMutation(api.tickets.move, {
           projectId,
           externalId,
-          cardId: args.cardId as string,
-          toColumnId
+          ticketId: asTicketId(args.ticketId),
+          toColumnId: asColumnId(toColumnId)
         });
         break;
       }
-      case "boards.deleteCard":
-        result = await ctx.runMutation(api.boards.deleteCard, {
+      case "tickets.comment": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.comment, {
           projectId,
           externalId,
-          cardId: args.cardId as string
+          ticketId: asTicketId(args.ticketId),
+          body: args.body
         });
         break;
-      case "boards.attachCardToSprint":
-        result = await ctx.runMutation(api.boards.attachCardToSprint, {
+      }
+      case "tickets.close": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.close, {
           projectId,
           externalId,
-          cardId: args.cardId as string,
-          sprintId: (args.sprintId as string) || undefined
+          ticketId: asTicketId(args.ticketId),
+          comment: args.comment
         });
         break;
-      case "boards.requestReview":
-        result = await ctx.runMutation(api.boards.requestReview, {
+      }
+      case "tickets.addBlockedBy": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.addBlockedBy, {
           projectId,
           externalId,
-          cardId: args.cardId as string
+          fromTicketId: asTicketId(args.ticketId),
+          toTicketId: asTicketId(args.blockerId)
         });
         break;
-      case "boards.approveReview":
-        result = await ctx.runMutation(api.boards.approveReview, {
+      }
+      case "tickets.removeBlockedBy": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.removeBlockedBy, {
           projectId,
           externalId,
-          cardId: args.cardId as string
+          fromTicketId: asTicketId(args.ticketId),
+          toTicketId: asTicketId(args.blockerId)
         });
         break;
-      case "boards.rejectReview":
-        result = await ctx.runMutation(api.boards.rejectReview, {
+      }
+      case "tickets.requestReview":
+      case "tickets.approveReview":
+      case "tickets.rejectReview": {
+        const args = parsed.data.args ?? {};
+        const mutation = {
+          "tickets.requestReview": api.tickets.requestReview,
+          "tickets.approveReview": api.tickets.approveReview,
+          "tickets.rejectReview": api.tickets.rejectReview
+        }[parsed.data.tool];
+        result = await ctx.runMutation(mutation, {
           projectId,
           externalId,
-          cardId: args.cardId as string
+          ticketId: asTicketId(args.ticketId)
         });
         break;
+      }
+      case "tickets.delete": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.remove, {
+          projectId,
+          externalId,
+          ticketId: asTicketId(args.ticketId)
+        });
+        break;
+      }
+      case "tickets.attachToSprint": {
+        const args = parsed.data.args ?? {};
+        result = await ctx.runMutation(api.tickets.attachToSprint, {
+          projectId,
+          externalId,
+          ticketId: asTicketId(args.ticketId),
+          sprintId: args.sprintId ? asSprintId(args.sprintId) : undefined
+        });
+        break;
+      }
       case "sprints.list":
         result = await ctx.runQuery(api.sprints.list, { projectId, externalId });
         break;
-      case "sprints.create":
+      case "sprints.create": {
+        const args = parsed.data.args ?? {};
         result = await ctx.runMutation(api.sprints.create, {
           projectId,
           externalId,
-          name: args.name as string,
-          startDate: args.startDate as number,
-          endDate: args.endDate as number
+          name: args.name,
+          startDate: args.startDate,
+          endDate: args.endDate
         });
         break;
-      case "sprints.activate":
+      }
+      case "sprints.activate": {
+        const args = parsed.data.args ?? {};
         result = await ctx.runMutation(api.sprints.activate, {
           projectId,
           externalId,
-          sprintId: args.sprintId as string
+          sprintId: asSprintId(args.sprintId)
         });
         break;
-      case "sprints.complete":
+      }
+      case "sprints.complete": {
+        const args = parsed.data.args ?? {};
         result = await ctx.runMutation(api.sprints.complete, {
           projectId,
           externalId,
-          sprintId: args.sprintId as string
+          sprintId: asSprintId(args.sprintId)
         });
         break;
-      case "metrics.forSprint":
+      }
+      case "metrics.forSprint": {
+        const args = parsed.data.args ?? {};
         result = await ctx.runQuery(api.metrics.forSprint, {
           projectId,
           externalId,
-          sprintId: args.sprintId as string
+          sprintId: asSprintId(args.sprintId)
         });
         break;
+      }
       case "metrics.velocityHistory":
         result = await ctx.runQuery(api.metrics.velocityHistory, { projectId, externalId });
         break;
       default:
-        return toResponse(404, { ok: false, requestId: body.requestId, error: { code: "UNKNOWN_TOOL", message: "Unknown tool." } });
+        await recordAudit(ctx, {
+          keyId: keyConfig.keyId,
+          keyLabel: keyConfig.keyLabel,
+          projectId,
+          externalId,
+          tool: parsed.data.tool,
+          requestId,
+          argsSummary: summarizeArgs(parsed.data.args),
+          success: false,
+          errorCode: "TOOL_FORBIDDEN",
+          errorMessage: "Tool not allowed."
+        });
+        return toResponse(403, { ok: false, requestId, error: { code: "TOOL_FORBIDDEN", message: "Tool not allowed." } });
     }
 
     await recordAudit(ctx, {
       keyId: keyConfig.keyId,
       keyLabel: keyConfig.keyLabel,
-      projectId: keyConfig.projectId,
-      externalId: keyConfig.externalId,
-      tool,
-      requestId: body.requestId,
-      argsSummary: summarizeArgs(args),
+      projectId,
+      externalId,
+      tool: parsed.data.tool,
+      requestId,
+      argsSummary: summarizeArgs(parsed.data.args),
       resultSummary: summarizeResult(result),
       success: true
     });
 
-    return toResponse(200, { ok: true, requestId: body.requestId, result });
+    return toResponse(200, { ok: true, requestId, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Tool execution failed.";
     await recordAudit(ctx, {
       keyId: keyConfig.keyId,
       keyLabel: keyConfig.keyLabel,
-      projectId: keyConfig.projectId,
-      externalId: keyConfig.externalId,
-      tool,
-      requestId: body.requestId,
-      argsSummary: summarizeArgs(body.args),
+      projectId,
+      externalId,
+      tool: parsed.data.tool,
+      requestId,
+      argsSummary: summarizeArgs(parsed.data.args),
       success: false,
       errorCode: "TOOL_ERROR",
       errorMessage: message
     });
-    return toResponse(500, { ok: false, requestId: body.requestId, error: { code: "TOOL_ERROR", message } });
+    return toResponse(500, { ok: false, requestId, error: { code: "TOOL_ERROR", message } });
   }
 });

@@ -1,4 +1,5 @@
 import { ConvexError } from "convex/values";
+import { z } from "zod";
 
 export const DEFAULT_COLUMNS = ["Backlog", "Todo", "In Progress", "Review", "Done"];
 
@@ -9,13 +10,12 @@ function readProjectAdminExternalIds() {
   }
 
   try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
+    const parsed = z.array(z.string()).safeParse(JSON.parse(raw));
+    if (!parsed.success) {
       return new Set<string>();
     }
 
-    const values = parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-    return new Set(values);
+    return new Set(parsed.data.filter((value) => value.trim().length > 0));
   } catch {
     return new Set<string>();
   }

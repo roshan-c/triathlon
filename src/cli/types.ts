@@ -1,10 +1,14 @@
+import type { JSONValue } from "convex/values";
+
+export type GatewayArgs = Record<string, JSONValue | undefined>;
+
 export type GatewayRequest = {
   tool: string;
-  args?: Record<string, unknown>;
+  args?: GatewayArgs;
   requestId?: string;
 };
 
-export type GatewayResponse<T = unknown> = {
+export type GatewayResponse<T extends JSONValue = JSONValue> = {
   ok: boolean;
   requestId?: string;
   result?: T;

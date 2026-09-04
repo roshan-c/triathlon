@@ -1,4 +1,9 @@
-export function printResult(result: unknown, asJson: boolean, title?: string) {
+import type { JSONValue } from "convex/values";
+import { z } from "zod";
+
+const printableScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+export function printResult(result: JSONValue | undefined, asJson: boolean, title?: string) {
   if (asJson) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
@@ -13,8 +18,9 @@ export function printResult(result: unknown, asJson: boolean, title?: string) {
     return;
   }
 
-  if (typeof result === "string" || typeof result === "number" || typeof result === "boolean") {
-    process.stdout.write(`${result}\n`);
+  const scalar = printableScalarSchema.safeParse(result);
+  if (scalar.success) {
+    process.stdout.write(`${scalar.data}\n`);
     return;
   }
 

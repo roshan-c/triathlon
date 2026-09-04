@@ -8,6 +8,7 @@ import {
   getBoardByProjectId,
   getColumnByName
 } from "./helpers";
+import type { Doc, Id } from "./_generated/dataModel";
 
 const query = queryGeneric;
 
@@ -38,7 +39,7 @@ export async function calculateSprintMetrics(ctx: any, args: { projectId: string
     getColumnByName(ctx, board._id, "Done"),
     getColumnByName(ctx, board._id, "In Progress"),
     ctx.db
-      .query("cards")
+      .query("tickets")
       .withIndex("by_sprintId", (q: any) => q.eq("sprintId", args.sprint._id))
       .collect()
   ]);
@@ -48,23 +49,23 @@ export async function calculateSprintMetrics(ctx: any, args: { projectId: string
   }
 
   const cards = sprintCards.filter((card: any) => card.boardId === board._id);
-  const cardsById = new Map<string, any>(cards.map((card: any) => [card._id as string, card]));
+  const cardsById = new Map<Id<"tickets">, Doc<"tickets">>(cards.map((card: any) => [card._id, card]));
 
   const doneEvents = await ctx.db
-    .query("cardEvents")
+    .query("ticketEvents")
     .withIndex("by_toColumnId_movedAt", (q: any) => q.eq("toColumnId", doneColumn._id).gte("movedAt", start).lte("movedAt", end))
     .collect();
 
-  const firstDoneByCard = new Map<string, number>();
+  const firstDoneByCard = new Map<Id<"tickets">, number>();
   for (const event of doneEvents) {
-    const card = cardsById.get(event.cardId as string);
+    const card = cardsById.get(event.ticketId);
     if (!card) {
       continue;
     }
 
-    const current = firstDoneByCard.get(event.cardId as string);
+    const current = firstDoneByCard.get(event.ticketId);
     if (current === undefined || event.movedAt < current) {
-      firstDoneByCard.set(event.cardId as string, event.movedAt);
+      firstDoneByCard.set(event.ticketId, event.movedAt);
     }
   }
 
@@ -76,7 +77,7 @@ export async function calculateSprintMetrics(ctx: any, args: { projectId: string
   const throughput = firstDoneByCard.size;
 
   const cardsCountedInBurndown = cards.filter((card: any) => {
-    const firstDoneAt = firstDoneByCard.get(card._id as string);
+    const firstDoneAt = firstDoneByCard.get(card._id);
     return firstDoneAt === undefined || firstDoneAt >= start;
   });
   const totalScopePoints = cardsCountedInBurndown.reduce(
@@ -129,8 +130,8 @@ export async function calculateSprintMetrics(ctx: any, args: { projectId: string
     leadCount += 1;
 
     const events = await ctx.db
-      .query("cardEvents")
-      .withIndex("by_cardId_movedAt", (q: any) => q.eq("cardId", card._id))
+      .query("ticketEvents")
+      .withIndex("by_ticketId_movedAt", (q: any) => q.eq("ticketId", card._id))
       .collect();
 
     const relevantDoneEvent = events.find(

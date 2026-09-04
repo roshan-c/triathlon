@@ -19,7 +19,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     if (storedTheme === "light" || storedTheme === "dark") {
       setTheme(storedTheme);
     } else {
-      setTheme("dark");
+      // Fall back to the system preference when nothing is stored.
+      setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     }
   }, []);
 

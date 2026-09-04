@@ -32,10 +32,10 @@ function parseDotEnv(content: string) {
   return output;
 }
 
-function loadEnvFile(envFile: string) {
+function loadEnvFile(envFile: string): Record<string, string> {
   const absolutePath = resolve(process.cwd(), envFile);
   if (!existsSync(absolutePath)) {
-    return {} as Record<string, string>;
+    return {};
   }
 
   return parseDotEnv(readFileSync(absolutePath, "utf8"));

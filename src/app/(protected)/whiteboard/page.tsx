@@ -3,6 +3,9 @@
 import { useMutation, useQuery } from "convex/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "@excalidraw/excalidraw/index.css";
+import type { GenericId as Id, JSONValue } from "convex/values";
+import { z } from "zod";
+import type { BinaryFiles } from "@excalidraw/excalidraw/types";
 import { useAppContext } from "@/components/app-context";
 import { useTheme } from "@/components/theme-provider";
 import { cvx } from "@/lib/convex";
@@ -12,8 +15,8 @@ type LibrarySaveState = "idle" | "saving" | "saved" | "error";
 
 type ExcalidrawInitialDataState = {
   elements?: readonly unknown[];
-  appState?: Record<string, unknown> | null;
-  files?: Record<string, unknown>;
+  appState?: null;
+  files?: BinaryFiles;
 };
 
 type SceneSnapshot = Pick<ExcalidrawInitialDataState, "elements" | "appState" | "files">;
@@ -28,31 +31,26 @@ type LibraryItem = {
   creatorName: string;
 };
 
-function isExcalidrawSnapshot(value: unknown): value is ExcalidrawInitialDataState {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
+const snapshotSchema = z.object({
+  elements: z.array(z.any()),
+  files: z.record(z.string(), z.any()).catch({}).optional()
+});
 
-  const candidate = value as { elements?: unknown };
-  return Array.isArray(candidate.elements);
-}
+const uploadResponseSchema = z.object({ storageId: z.string() });
 
 function serializeSnapshot(snapshot: SceneSnapshot): string {
   return JSON.stringify(snapshot);
 }
 
-function normalizeSnapshot(value: unknown): SceneSnapshot | null {
-  if (!isExcalidrawSnapshot(value)) {
+function normalizeSnapshot(value: JSONValue): SceneSnapshot | null {
+  const check = snapshotSchema.safeParse(value);
+  if (!check.success) {
     return null;
   }
-
-  const candidate = value as Record<string, unknown>;
-  const files = candidate.files;
-
   return {
-    elements: candidate.elements as readonly unknown[],
+    elements: check.data.elements,
     appState: null,
-    files: files && typeof files === "object" ? (files as Record<string, unknown>) : undefined
+    files: check.data.files
   };
 }
 
@@ -76,7 +74,7 @@ export default function WhiteboardPage() {
   const libraryItems = useQuery(cvx.whiteboards.listLibrary, {
     projectId: project.projectId,
     externalId
-  }) as LibraryItem[] | undefined;
+  });
 
   const [ExcalidrawComponent, setExcalidrawComponent] = useState<any>(null);
   const [canvasLoadError, setCanvasLoadError] = useState("");
@@ -276,7 +274,7 @@ export default function WhiteboardPage() {
   }, [flushPendingSave]);
 
   const handleChange = useCallback(
-    (elements: readonly any[], _appState: any, files: Record<string, unknown>) => {
+    (elements: readonly any[], _appState: any, files: BinaryFiles) => {
       if (!canvasReady || suspendAutosaveRef.current) {
         return;
       }
@@ -384,13 +382,18 @@ export default function WhiteboardPage() {
         throw new Error("Upload failed");
       }
 
-      const payload = (await uploadResult.json()) as { storageId: string };
+      const uploadResponse = uploadResponseSchema.safeParse(await uploadResult.json());
+      if (!uploadResponse.success) {
+        throw new Error("Upload failed");
+      }
 
       await saveToLibrary({
         projectId: project.projectId,
         externalId,
         title: trimmedTitle,
-        storageId: payload.storageId as any
+        // SAFETY: The storage upload endpoint returns the new _storage Id as a
+        // string; `Id<"_storage">` is that same string at the type level.
+        storageId: uploadResponse.data.storageId as Id<"_storage">
       });
 
       setLibrarySaveState("saved");
@@ -409,7 +412,7 @@ export default function WhiteboardPage() {
       return;
     }
 
-    const confirmed = window.confirm(`Replace your current local whiteboard with a copy of \"${item.title}\"?`);
+    const confirmed = window.confirm(`Replace your current local whiteboard with a copy of "${item.title}"?`);
     if (!confirmed) {
       return;
     }
@@ -429,7 +432,7 @@ export default function WhiteboardPage() {
       await loadSnapshotAsLocalCopy(serialized);
       setLibraryTitle(item.title);
       setLibrarySaveState("saved");
-      setLibraryMessage(`Loaded \"${item.title}\" as your own local copy.`);
+      setLibraryMessage(`Loaded "${item.title}" as your own local copy.`);
     } catch {
       setSaveState("error");
       setLibrarySaveState("error");
@@ -440,15 +443,15 @@ export default function WhiteboardPage() {
   };
 
   return (
-    <div className="space-y-3">
-      <section className="panel flex flex-wrap items-center justify-between gap-3 p-3">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-display text-lg font-bold uppercase">Whiteboard</h1>
-          <p className="muted text-xs">Autosaves locally. Save reusable boards to the project library.</p>
+          <h1 className="text-xl font-semibold tracking-tight text-[var(--foreground)]">Whiteboard</h1>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">Autosaves locally. Save reusable boards to the project library.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span
-            className={`pill ${
+            className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ${
               saveState === "error"
                 ? "bg-[var(--danger-soft)] text-[var(--danger-text)]"
                 : saveState === "saving"
@@ -460,22 +463,22 @@ export default function WhiteboardPage() {
           </span>
           <button
             type="button"
-            className="rounded-md border-2 border-[var(--danger-text)] bg-[var(--danger-soft)] px-3 py-1.5 text-xs font-semibold uppercase text-[var(--danger-text)]"
+            className="btn btn-danger btn-sm"
             onClick={clearLocalBoard}
           >
-            Clear Local
+            Clear local
           </button>
         </div>
-      </section>
+      </div>
 
       {compatNotice ? (
-        <section className="panel p-3">
+        <section className="rounded-xl border border-[var(--warn-text)]/25 bg-[var(--warn-soft)] px-4 py-3">
           <p className="text-sm text-[var(--warn-text)]">{compatNotice}</p>
         </section>
       ) : null}
 
-      <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <section className="panel h-[72vh] overflow-hidden p-0 sm:h-[78vh] xl:h-[80vh]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="h-[72vh] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)] sm:h-[78vh] xl:h-[80vh]">
           {canvasReady && ExcalidrawComponent ? (
             <ExcalidrawComponent
               key={`${localStorageKey}:${canvasKey}`}
@@ -490,37 +493,38 @@ export default function WhiteboardPage() {
             </div>
           ) : (
             <div className="flex h-full items-center justify-center">
-              <p className="muted text-xs uppercase tracking-wider">Loading canvas...</p>
+              <p className="text-xs text-[var(--muted-foreground)]">Loading canvas...</p>
             </div>
           )}
         </section>
 
-        <aside className="panel flex min-h-[28rem] flex-col p-4">
-          <div className="border-b-2 border-[var(--border)] pb-4">
-            <h2 className="font-display text-base font-bold uppercase">Project Library</h2>
-            <p className="muted mt-1 text-xs">Save reusable boards here. Opening one creates your own editable local copy.</p>
+        <aside className="flex min-h-[28rem] flex-col rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)]">
+          <div className="border-b border-[var(--border)] px-4 py-3.5">
+            <h2 className="text-sm font-semibold tracking-tight text-[var(--foreground)]">Project library</h2>
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+              Save reusable boards here. Opening one creates your own editable local copy.
+            </p>
+          </div>
 
-            <div className="mt-4 space-y-2">
-              <input
-                value={libraryTitle}
-                onChange={(event) => setLibraryTitle(event.target.value)}
-                className="w-full rounded-md px-3 py-2 text-sm"
-                placeholder="Whiteboard title"
-                maxLength={80}
-              />
-              <button
-                type="button"
-                className="btn-accent w-full rounded-md px-3 py-2 text-xs font-semibold uppercase"
-                onClick={saveCurrentToLibrary}
-                disabled={librarySaveState === "saving" || !excalidrawApi}
-              >
-                {librarySaveState === "saving" ? "Saving to Library" : "Save Current Board"}
-              </button>
-            </div>
-
+          <div className="space-y-2 p-4">
+            <input
+              value={libraryTitle}
+              onChange={(event) => setLibraryTitle(event.target.value)}
+              className="w-full text-sm"
+              placeholder="Whiteboard title"
+              maxLength={80}
+            />
+            <button
+              type="button"
+              className="btn btn-primary w-full text-xs"
+              onClick={saveCurrentToLibrary}
+              disabled={librarySaveState === "saving" || !excalidrawApi}
+            >
+              {librarySaveState === "saving" ? "Saving to library" : "Save current board"}
+            </button>
             {libraryMessage ? (
               <p
-                className={`mt-3 text-sm ${
+                className={`text-xs ${
                   librarySaveState === "error" ? "text-[var(--danger-text)]" : "text-[var(--muted-foreground)]"
                 }`}
               >
@@ -529,39 +533,38 @@ export default function WhiteboardPage() {
             ) : null}
           </div>
 
-          <div className="mt-4 flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto border-t border-[var(--border)] p-2 thin-scroll">
             {libraryItems === undefined ? (
-              <p className="muted text-sm">Loading library...</p>
+              <p className="px-3 py-4 text-sm text-[var(--muted-foreground)]">Loading library...</p>
             ) : libraryItems.length === 0 ? (
-              <div className="rounded-md border-2 border-dashed border-[var(--border)] p-4 text-sm text-[var(--muted-foreground)]">
+              <p className="rounded-lg border border-dashed border-[var(--border-strong)] px-4 py-6 text-center text-sm text-[var(--muted-foreground)]">
                 No boards saved yet. Save the current canvas to start a shared project library.
-              </div>
+              </p>
             ) : (
-              <div className="space-y-3">
-                {libraryItems.map((item) => (
-                  <section key={item.itemId} className="rounded-md border-2 border-[var(--border)] bg-[var(--background)] p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold uppercase text-[var(--foreground)]">{item.title}</p>
-                        <p className="muted mt-1 text-xs">By {item.creatorName}</p>
-                        <p className="muted text-xs">Updated {formatTimestamp(item.updatedAt)}</p>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn-ghost rounded-md px-3 py-1.5 text-xs font-semibold uppercase"
-                        onClick={() => void importLibraryItemAsCopy(item)}
-                        disabled={!item.snapshotUrl || activeLibraryItemId === item.itemId}
-                      >
-                        {activeLibraryItemId === item.itemId ? "Opening" : "Open Copy"}
-                      </button>
+              <div className="divide-y divide-[var(--border)]">
+                {libraryItems.map((item: LibraryItem) => (
+                  <div key={item.itemId} className="flex items-center justify-between gap-3 px-2 py-2.5">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-[var(--foreground)]">{item.title}</p>
+                      <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
+                        By {item.creatorName} <span className="mx-1">·</span> Updated {formatTimestamp(item.updatedAt)}
+                      </p>
                     </div>
-                  </section>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm shrink-0"
+                      onClick={() => void importLibraryItemAsCopy(item)}
+                      disabled={!item.snapshotUrl || activeLibraryItemId === item.itemId}
+                    >
+                      {activeLibraryItemId === item.itemId ? "Opening" : "Open copy"}
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
           </div>
         </aside>
-      </section>
+      </div>
     </div>
   );
 }

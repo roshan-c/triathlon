@@ -30,8 +30,8 @@ It includes:
 - Project creation restricted to owner/admin users
 - Default board columns on project creation:
   - Backlog, Todo, In Progress, Review, Done
-- Card CRUD + drag movement tracking (`CardEvent`)
-- Review gate: cards must be approved before moving to Done
+- Ticket CRUD + drag movement tracking (`TicketEvent`)
+- Review gate: tickets must be approved before moving to Done
 - Sprint create / activate / complete
 - Metrics dashboard + whiteboard
 
@@ -103,17 +103,23 @@ npx convex env set BETTER_AUTH_SECRET "<prod-secret>"
 
 ### Frontend
 
-Set public vars to production values:
+Set the production public vars in the repository's ignored `.env` file (the
+development `.env.local` must keep pointing at your local/dev deployment):
 
 - `NEXT_PUBLIC_SITE_URL=https://<your-domain>`
-- `NEXT_PUBLIC_CONVEX_URL=https://<prod-deployment>.convex.cloud`
-- `NEXT_PUBLIC_CONVEX_SITE_URL=https://<prod-deployment>.convex.site`
+- `NEXT_PUBLIC_CONVEX_URL_PROD=https://<prod-deployment>.convex.cloud`
+- `NEXT_PUBLIC_CONVEX_SITE_URL_PROD=https://<prod-deployment>.convex.site`
 
-Then deploy:
+Deploy through the Make target so those production values are injected into
+the client bundle:
 
 ```bash
-npm run deploy:prod
+make deploy
 ```
+
+Avoid invoking `npm run deploy:prod` directly when `.env.local` points at a
+development deployment; public `NEXT_PUBLIC_*` values are embedded at build
+time.
 
 ---
 
@@ -123,7 +129,7 @@ npm run deploy:prod
 2. If owner/admin, create a project
 3. Confirm redirect to `/dashboard?projectId=...`
 4. Confirm board columns exist
-5. Create and move a card; refresh and verify persistence
+5. Create and move a ticket; refresh and verify persistence
 6. Open Metrics and Whiteboard pages
 
 ---
@@ -157,19 +163,19 @@ npm install -g .
 ```bash
 tri doctor
 tri project summary
-tri board snapshot --json
+tri tickets board --json
 ```
 
 ### Common commands
 
 ```bash
-tri cards create --title "Define agent goals" --column-name Backlog --points 3 --priority high
-tri cards move --id <cardId> --to-column-name "In Progress"
-tri cards request-review --id <cardId>
-tri cards approve-review --id <cardId>
-tri cards reject-review --id <cardId>
-tri cards delete --id <cardId>          # prompts
-tri cards delete --id <cardId> --force  # no prompt
+tri tickets create --title "Define agent goals" --column-name Backlog --points 3 --priority high
+tri tickets move --id <ticketId> --to-column-name "In Progress"
+tri tickets request-review --id <ticketId>
+tri tickets approve-review --id <ticketId>
+tri tickets reject-review --id <ticketId>
+tri tickets delete --id <ticketId>          # prompts
+tri tickets delete --id <ticketId> --force  # no prompt
 tri sprints list
 tri metrics velocity
 ```
@@ -207,7 +213,7 @@ Each key is scoped to one project via `projectId`.
 
 ```json
 {
-  "tool": "boards.createCard",
+    "tool": "tickets.create",
   "args": {
     "columnName": "Backlog",
     "title": "Investigate dashboard flow",
@@ -231,32 +237,39 @@ Each key is scoped to one project via `projectId`.
 
 ### Review workflow
 
-Cards must be approved before moving to Done:
+Tickets must be approved before moving to Done:
 
-1. Create or update a card
-2. Call `boards.requestReview` when ready
-3. Reviewer calls `boards.approveReview` or `boards.rejectReview`
-4. Only approved cards can move to Done via `boards.moveCard`
+1. Create or update a ticket
+2. Call `tickets.requestReview` when ready
+3. Reviewer calls `tickets.approveReview` or `tickets.rejectReview`
+4. Only approved tickets can move to Done via `tickets.move`
 
 Errors:
 
-- `REVIEW_REQUIRED` — card is awaiting review
-- `REVIEW_REJECTED` — card was rejected; re-request after fixes
+- `REVIEW_REQUIRED` — ticket is awaiting review
+- `REVIEW_REJECTED` — ticket was rejected; re-request after fixes
 
 ### Allowed tools
 
 - `system.describe`
 - `projects.getSummary`
 - `projects.members`
-- `boards.getSnapshot`
-- `boards.createCard`
-- `boards.updateCard`
-- `boards.moveCard` (`toColumnId` or `toColumnName`)
-- `boards.deleteCard`
-- `boards.attachCardToSprint`
-- `boards.requestReview`
-- `boards.approveReview`
-- `boards.rejectReview`
+- `tickets.board`
+- `tickets.list`
+- `tickets.get`
+- `tickets.create`
+- `tickets.update`
+- `tickets.move` (`toColumnId` or `toColumnName`)
+- `tickets.comment`
+- `tickets.close`
+- `tickets.frontier`
+- `tickets.addBlockedBy`
+- `tickets.removeBlockedBy`
+- `tickets.delete`
+- `tickets.attachToSprint`
+- `tickets.requestReview`
+- `tickets.approveReview`
+- `tickets.rejectReview`
 - `sprints.list`
 - `sprints.create`
 - `sprints.activate`

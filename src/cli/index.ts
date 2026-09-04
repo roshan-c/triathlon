@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
 import { Command, Option } from "commander";
+import { z } from "zod";
 import { GatewayClient, GatewayClientError } from "./client.js";
 import { resolveCliConfig } from "./config.js";
 import { printResult } from "./output.js";
 import { confirm } from "./prompts.js";
 import type { CliConfig, CliGlobalOptions } from "./types.js";
-
-type AnyOptions = CliGlobalOptions & Record<string, unknown>;
 
 function toTimestamp(rawDate: string, fieldName: string) {
   const date = new Date(rawDate);
@@ -17,14 +16,22 @@ function toTimestamp(rawDate: string, fieldName: string) {
   return date.getTime();
 }
 
+function collect(value: string, previous: string[] = []) {
+  return [...previous, value];
+}
+
+const ticketDetailSchema = z.object({
+  blockedBy: z.array(z.json())
+});
+
 function getGlobalOptions(command: Command): CliGlobalOptions {
-  const opts = command.optsWithGlobals<AnyOptions>();
+  const opts = command.optsWithGlobals<CliGlobalOptions>();
   return {
     json: Boolean(opts.json),
-    url: typeof opts.url === "string" ? opts.url : undefined,
-    key: typeof opts.key === "string" ? opts.key : undefined,
-    projectId: typeof opts.projectId === "string" ? opts.projectId : undefined,
-    envFile: typeof opts.envFile === "string" ? opts.envFile : undefined,
+    url: opts.url,
+    key: opts.key,
+    projectId: opts.projectId,
+    envFile: opts.envFile,
     skipProjectCheck: Boolean(opts.skipProjectCheck)
   };
 }
@@ -61,7 +68,7 @@ const program = new Command();
 
 program
   .name("tri")
-  .description("Triathlon CLI: agent-gateway wrapper for board, sprint, and metrics workflows")
+  .description("Triathlon CLI: agent-gateway wrapper for ticket, sprint, and metrics workflows")
   .version("0.1.0")
   .option("-j, --json", "Output raw JSON")
   .option("--url <url>", "Agent gateway URL (TRI_AGENT_URL)")
@@ -135,34 +142,54 @@ projectCmd
     });
   });
 
-const boardCmd = program.command("board").description("Board operations");
+const ticketsCmd = program.command("tickets").description("Ticket lifecycle operations");
 
-boardCmd
-  .command("snapshot")
-  .description("Get board snapshot including columns and cards")
+ticketsCmd
+  .command("board")
+  .description("Get the board with its columns and tickets")
   .action(async (_opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
-      const result = await client.call("boards.getSnapshot", {});
-      printResult(result, config.json, "Board snapshot");
+      const result = await client.call("tickets.board", {});
+      printResult(result, config.json, "Ticket board");
     });
   });
 
-const cardsCmd = program.command("cards").description("Card lifecycle operations");
+ticketsCmd
+  .command("list")
+  .description("List tickets")
+  .action(async (_opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.list", {});
+      printResult(result, config.json, "Tickets");
+    });
+  });
 
-cardsCmd
+ticketsCmd
+  .command("show")
+  .description("Show a ticket with comments and links")
+  .requiredOption("--id <ticketId>", "Ticket id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.get", { ticketId: opts.id });
+      printResult(result, config.json, "Ticket");
+    });
+  });
+
+ticketsCmd
   .command("create")
-  .description("Create a card")
-  .requiredOption("--title <title>", "Card title")
-  .option("--description <description>", "Card description")
+  .description("Create a ticket")
+  .requiredOption("--title <title>", "Ticket title")
+  .option("--description <description>", "Ticket description")
   .option("--column-name <name>", "Column name", "Backlog")
   .option("--column-id <id>", "Column id")
   .option("--points <points>", "Story points", (v) => Number(v))
   .option("--priority <priority>", "Priority: low|medium|high", "medium")
   .option("--sprint-id <id>", "Sprint id")
   .option("--assignee <externalId>", "Assignee external id")
+  .option("--label <label>", "Label; repeat for multiple labels", collect)
   .action(async (opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
-      const result = await client.call("boards.createCard", {
+      const result = await client.call("tickets.create", {
         title: opts.title,
         description: opts.description,
         columnName: opts.columnName,
@@ -171,50 +198,55 @@ cardsCmd
         priority: opts.priority,
         sprintId: opts.sprintId,
         assigneeExternalId: opts.assignee,
-        labels: []
+        labels: opts.label ?? []
       });
 
-      printResult(result, config.json, "Card created");
+      printResult(result, config.json, "Ticket created");
     });
   });
 
-cardsCmd
+ticketsCmd
   .command("update")
-  .description("Update a card")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Update a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .option("--title <title>")
   .option("--description <description>")
   .option("--points <points>", "Story points", (v) => Number(v))
   .option("--priority <priority>", "Priority: low|medium|high")
   .option("--assignee <externalId>", "Assignee external id")
+  .option("--label <label>", "Replace labels; repeat for multiple labels", collect)
+  .option("--clear-labels", "Remove all labels")
   .action(async (opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
       const payload = {
-        cardId: opts.id,
+        ticketId: opts.id,
         title: opts.title,
         description: opts.description,
         storyPoints: Number.isFinite(opts.points) ? opts.points : undefined,
         priority: opts.priority,
-        assigneeExternalId: opts.assignee
+        assigneeExternalId: opts.assignee,
+        labels: opts.clearLabels ? [] : opts.label
       };
 
       const hasUpdate = Object.entries(payload).some(
-        ([key, value]) => key !== "cardId" && value !== undefined
+        ([key, value]) => key !== "ticketId" && value !== undefined
       );
 
       if (!hasUpdate) {
-        throw new Error("No update fields provided. Use --title/--description/--points/--priority/--assignee.");
+        throw new Error(
+          "No update fields provided. Use --title/--description/--points/--priority/--assignee/--label/--clear-labels."
+        );
       }
 
-      const result = await client.call("boards.updateCard", payload);
-      printResult(result, config.json, "Card updated");
+      const result = await client.call("tickets.update", payload);
+      printResult(result, config.json, "Ticket updated");
     });
   });
 
-cardsCmd
+ticketsCmd
   .command("move")
-  .description("Move a card to a new column")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Move a ticket to a new column")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .addOption(new Option("--to-column-id <id>", "Destination column id"))
   .addOption(new Option("--to-column-name <name>", "Destination column name"))
   .action(async (opts, command) => {
@@ -223,41 +255,124 @@ cardsCmd
         throw new Error("Provide --to-column-id or --to-column-name.");
       }
 
-      const result = await client.call("boards.moveCard", {
-        cardId: opts.id,
+      const result = await client.call("tickets.move", {
+        ticketId: opts.id,
         toColumnId: opts.toColumnId,
         toColumnName: opts.toColumnName
       });
-      printResult(result, config.json, "Card moved");
+      printResult(result, config.json, "Ticket moved");
     });
   });
 
-cardsCmd
+ticketsCmd
+  .command("comment")
+  .description("Post a comment on a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
+  .requiredOption("--body <text>", "Comment body")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.comment", {
+        ticketId: opts.id,
+        body: opts.body
+      });
+      printResult(result, config.json, "Comment posted");
+    });
+  });
+
+ticketsCmd
+  .command("close")
+  .description("Close a ticket atomically with a comment")
+  .requiredOption("--id <ticketId>", "Ticket id")
+  .requiredOption("--comment <text>", "Closing comment")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.close", {
+        ticketId: opts.id,
+        comment: opts.comment
+      });
+      printResult(result, config.json, "Ticket closed");
+    });
+  });
+
+ticketsCmd
+  .command("frontier")
+  .description("List open, unclaimed tickets without open blockers")
+  .action(async (_opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.frontier", {});
+      printResult(result, config.json, "Ticket frontier");
+    });
+  });
+
+ticketsCmd
+  .command("blocked-by")
+  .description("List a ticket's blocking edges")
+  .requiredOption("--id <ticketId>", "Ticket id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const detail = ticketDetailSchema.parse(
+        await client.call("tickets.get", { ticketId: opts.id })
+      );
+      printResult(detail.blockedBy, config.json, "Blocked by");
+    });
+  });
+
+ticketsCmd
+  .command("add-blocked-by")
+  .description("Add a blocker to a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
+  .requiredOption("--blocker-id <ticketId>", "Blocking ticket id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.addBlockedBy", {
+        ticketId: opts.id,
+        blockerId: opts.blockerId
+      });
+      printResult(result, config.json, "Blocker added");
+    });
+  });
+
+ticketsCmd
+  .command("remove-blocked-by")
+  .description("Remove a blocker from a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
+  .requiredOption("--blocker-id <ticketId>", "Blocking ticket id")
+  .action(async (opts, command) => {
+    await runWithClient(command, async ({ client, config }) => {
+      const result = await client.call("tickets.removeBlockedBy", {
+        ticketId: opts.id,
+        blockerId: opts.blockerId
+      });
+      printResult(result, config.json, "Blocker removed");
+    });
+  });
+
+ticketsCmd
   .command("delete")
-  .description("Delete a card")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Delete a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .option("-y, --yes", "Skip confirmation prompt")
   .option("-f, --force", "Skip confirmation prompt")
   .action(async (opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
       const bypass = Boolean(opts.yes || opts.force);
       if (!bypass) {
-        const ok = await confirm(`Delete card ${opts.id}? This cannot be undone.`);
+        const ok = await confirm(`Delete ticket ${opts.id}? This cannot be undone.`);
         if (!ok) {
           printResult({ ok: false, cancelled: true }, config.json, "Cancelled");
           return;
         }
       }
 
-      const result = await client.call("boards.deleteCard", { cardId: opts.id });
-      printResult(result, config.json, "Card deleted");
+      const result = await client.call("tickets.delete", { ticketId: opts.id });
+      printResult(result, config.json, "Ticket deleted");
     });
   });
 
-cardsCmd
+ticketsCmd
   .command("attach-sprint")
-  .description("Attach or clear a card sprint")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Attach or clear a ticket sprint")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .option("--sprint-id <sprintId>", "Sprint id")
   .option("--clear", "Clear sprint assignment")
   .action(async (opts, command) => {
@@ -265,43 +380,43 @@ cardsCmd
       if (!opts.clear && !opts.sprintId) {
         throw new Error("Provide --sprint-id or --clear.");
       }
-      const result = await client.call("boards.attachCardToSprint", {
-        cardId: opts.id,
+      const result = await client.call("tickets.attachToSprint", {
+        ticketId: opts.id,
         sprintId: opts.clear ? undefined : opts.sprintId
       });
-      printResult(result, config.json, "Card sprint updated");
+      printResult(result, config.json, "Ticket sprint updated");
     });
   });
 
-cardsCmd
+ticketsCmd
   .command("request-review")
-  .description("Request review for a card")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Request review for a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .action(async (opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
-      const result = await client.call("boards.requestReview", { cardId: opts.id });
+      const result = await client.call("tickets.requestReview", { ticketId: opts.id });
       printResult(result, config.json, "Review requested");
     });
   });
 
-cardsCmd
+ticketsCmd
   .command("approve-review")
-  .description("Approve review for a card")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Approve review for a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .action(async (opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
-      const result = await client.call("boards.approveReview", { cardId: opts.id });
+      const result = await client.call("tickets.approveReview", { ticketId: opts.id });
       printResult(result, config.json, "Review approved");
     });
   });
 
-cardsCmd
+ticketsCmd
   .command("reject-review")
-  .description("Reject review for a card")
-  .requiredOption("--id <cardId>", "Card id")
+  .description("Reject review for a ticket")
+  .requiredOption("--id <ticketId>", "Ticket id")
   .action(async (opts, command) => {
     await runWithClient(command, async ({ client, config }) => {
-      const result = await client.call("boards.rejectReview", { cardId: opts.id });
+      const result = await client.call("tickets.rejectReview", { ticketId: opts.id });
       printResult(result, config.json, "Review rejected");
     });
   });
@@ -382,7 +497,7 @@ metricsCmd
     });
   });
 
-program.parseAsync(process.argv).catch((error: unknown) => {
+program.parseAsync(process.argv).catch((error) => {
   if (error instanceof GatewayClientError) {
     console.error(`Error [${error.code}]: ${error.message}`);
     process.exit(2);

@@ -1,0 +1,3 @@
+# Tickets replace Cards, product-wide, with a fresh start
+
+The engineering skills ecosystem (to-tickets, triage, wayfinder) speaks of tickets and issues; the product said "cards". We renamed the work-item concept to Ticket everywhere: the `cards` table becomes `tickets` (plus `ticketEvents`, `ticketComments`, `ticketLinks`), gateway tools and the CLI rename Card→Ticket, the gateway namespace becomes `tickets.*` (the board snapshot becomes `tickets.board`), and `system.describe` bumps to 2.0. No data migration: existing board data is scrapped and the product starts fresh. A full sweep now is cheap — the product is early-life, agent keys are 1.x, and no external consumers depend on the old names — and kills the legacy term before it can confuse future contributors.

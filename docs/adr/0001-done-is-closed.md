@@ -1,0 +1,3 @@
+# Done column is the closed state
+
+Triathlon needs a "closed" concept so tickets can be resolved and excluded from the frontier. We decided the Done column IS the closed state: no separate status field. A ticket in Done is closed; moving it out of Done reopens it. The review gate already guards entry to Done, and a second state variable would invite drift ("closed but sitting in Review?"). GitHub-style open/closed toggles read as column moves, keeping one source of truth.

@@ -40,9 +40,16 @@ export default defineSchema({
     createdAt: v.number()
   }).index("by_boardId_position", ["boardId", "position"]),
 
-  cards: defineTable({
+  ticketCounters: defineTable({
+    projectId: v.id("projects"),
+    nextNumber: v.number()
+  }).index("by_projectId", ["projectId"]),
+
+  tickets: defineTable({
+    projectId: v.id("projects"),
     boardId: v.id("boards"),
     columnId: v.id("columns"),
+    number: v.number(),
     sprintId: v.optional(v.id("sprints")),
     title: v.string(),
     description: v.string(),
@@ -57,6 +64,8 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number()
   })
+    .index("by_projectId", ["projectId"])
+    .index("by_projectId_number", ["projectId", "number"])
     .index("by_boardId", ["boardId"])
     .index("by_columnId", ["columnId"])
     .index("by_sprintId", ["sprintId"]) 
@@ -84,16 +93,35 @@ export default defineSchema({
     .index("by_projectId", ["projectId"])
     .index("by_projectId_status", ["projectId", "status"]),
 
-  cardEvents: defineTable({
-    cardId: v.id("cards"),
+  ticketEvents: defineTable({
+    ticketId: v.id("tickets"),
     fromColumnId: v.id("columns"),
     toColumnId: v.id("columns"),
     movedBy: v.id("users"),
     movedAt: v.number()
   })
-    .index("by_cardId_movedAt", ["cardId", "movedAt"])
+    .index("by_ticketId_movedAt", ["ticketId", "movedAt"])
     .index("by_toColumnId_movedAt", ["toColumnId", "movedAt"])
     .index("by_toColumnId", ["toColumnId"]),
+
+  ticketComments: defineTable({
+    ticketId: v.id("tickets"),
+    authorId: v.id("users"),
+    body: v.string(),
+    createdAt: v.number()
+  }).index("by_ticketId_createdAt", ["ticketId", "createdAt"]),
+
+  ticketLinks: defineTable({
+    projectId: v.id("projects"),
+    fromTicketId: v.id("tickets"),
+    toTicketId: v.id("tickets"),
+    type: v.union(v.literal("blockedBy"), v.literal("parentOf")),
+    createdBy: v.id("users"),
+    createdAt: v.number()
+  })
+    .index("by_fromTicketId_type", ["fromTicketId", "type"])
+    .index("by_toTicketId_type", ["toTicketId", "type"])
+    .index("by_projectId_type", ["projectId", "type"]),
 
   sharedWhiteboards: defineTable({
     projectId: v.id("projects"),

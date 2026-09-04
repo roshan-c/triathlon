@@ -1,9 +1,35 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { ensureProjectMember, getBoardByProjectId, getUserByExternalId } from "./helpers";
+import type { Doc, Id } from "./_generated/dataModel";
 
 const query = queryGeneric;
 const mutation = mutationGeneric;
+
+type CardPatch = {
+  updatedAt: number;
+  title?: string;
+  description?: string;
+  storyPoints?: number;
+  priority?: "low" | "medium" | "high";
+  labels?: string[];
+  assigneeId?: Id<"users">;
+};
+
+async function nextTicketNumber(ctx: any, projectId: Id<"projects">) {
+  const counter = await ctx.db
+    .query("ticketCounters")
+    .withIndex("by_projectId", (q: any) => q.eq("projectId", projectId))
+    .unique();
+
+  if (!counter) {
+    await ctx.db.insert("ticketCounters", { projectId, nextNumber: 2 });
+    return 1;
+  }
+
+  await ctx.db.patch(counter._id, { nextNumber: counter.nextNumber + 1 });
+  return counter.nextNumber;
+}
 
 export const getBoard = query({
   args: {
@@ -22,7 +48,7 @@ export const getBoard = query({
           position: v.number(),
           cards: v.array(
             v.object({
-              _id: v.id("cards"),
+              _id: v.id("tickets"),
               title: v.string(),
               description: v.string(),
               storyPoints: v.number(),
@@ -51,14 +77,14 @@ export const getBoard = query({
         .withIndex("by_boardId_position", (q) => q.eq("boardId", board._id))
         .collect(),
       ctx.db
-        .query("cards")
+        .query("tickets")
         .withIndex("by_boardId", (q) => q.eq("boardId", board._id))
         .collect()
     ]);
 
-    const cardsByColumn = new Map<string, any[]>();
+    const cardsByColumn = new Map<Id<"columns">, Doc<"tickets">[]>();
     for (const card of cards) {
-      const key = card.columnId as string;
+      const key = card.columnId;
       const bucket = cardsByColumn.get(key) ?? [];
       bucket.push(card);
       cardsByColumn.set(key, bucket);
@@ -71,7 +97,7 @@ export const getBoard = query({
         _id: column._id,
         name: column.name,
         position: column.position,
-        cards: (cardsByColumn.get(column._id as string) ?? [])
+        cards: (cardsByColumn.get(column._id) ?? [])
           .sort((a, b) => b.updatedAt - a.updatedAt)
           .map((card) => ({
             _id: card._id,
@@ -106,7 +132,7 @@ export const createCard = mutation({
     priority: v.optional(v.union(v.literal("low"), v.literal("medium"), v.literal("high"))),
     labels: v.optional(v.array(v.string()))
   },
-  returns: v.id("cards"),
+  returns: v.id("tickets"),
   handler: async (ctx, args) => {
     const { user } = await ensureProjectMember(ctx, args.projectId, args.externalId);
     const board = await getBoardByProjectId(ctx, args.projectId);
@@ -123,7 +149,7 @@ export const createCard = mutation({
       }
     }
 
-    let assigneeId: any = undefined;
+    let assigneeId: Id<"users"> | undefined;
     if (args.assigneeExternalId) {
       const assignee = await getUserByExternalId(ctx, args.assigneeExternalId);
       const membership = await ctx.db
@@ -140,9 +166,12 @@ export const createCard = mutation({
     }
 
     const now = Date.now();
-    return await ctx.db.insert("cards", {
+    const number = await nextTicketNumber(ctx, args.projectId);
+    return await ctx.db.insert("tickets", {
+      projectId: args.projectId,
       boardId: board._id,
       columnId: args.columnId,
+      number,
       sprintId: args.sprintId,
       title: args.title.trim(),
       description: args.description?.trim() ?? "",
@@ -164,7 +193,7 @@ export const updateCard = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards"),
+    cardId: v.id("tickets"),
     title: v.optional(v.string()),
     description: v.optional(v.string()),
     storyPoints: v.optional(v.number()),
@@ -202,7 +231,7 @@ export const updateCard = mutation({
       }
     }
 
-    const patch: Record<string, unknown> = {
+    const patch: CardPatch = {
       updatedAt: Date.now()
     };
 
@@ -222,7 +251,7 @@ export const moveCard = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards"),
+    cardId: v.id("tickets"),
     toColumnId: v.id("columns")
   },
   returns: v.null(),
@@ -272,8 +301,8 @@ export const moveCard = mutation({
       updatedAt: now
     });
 
-    await ctx.db.insert("cardEvents", {
-      cardId: args.cardId,
+    await ctx.db.insert("ticketEvents", {
+      ticketId: args.cardId,
       fromColumnId,
       toColumnId: args.toColumnId,
       movedBy: user._id,
@@ -288,7 +317,7 @@ export const attachCardToSprint = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards"),
+    cardId: v.id("tickets"),
     sprintId: v.optional(v.id("sprints"))
   },
   returns: v.null(),
@@ -321,11 +350,11 @@ export const activity = query({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards")
+    cardId: v.id("tickets")
   },
   returns: v.array(
     v.object({
-      _id: v.id("cardEvents"),
+      _id: v.id("ticketEvents"),
       movedAt: v.number(),
       movedBy: v.id("users"),
       fromColumnId: v.id("columns"),
@@ -340,8 +369,8 @@ export const activity = query({
     }
 
     const events = await ctx.db
-      .query("cardEvents")
-      .withIndex("by_cardId_movedAt", (q) => q.eq("cardId", args.cardId))
+      .query("ticketEvents")
+      .withIndex("by_ticketId_movedAt", (q) => q.eq("ticketId", args.cardId))
       .collect();
 
     return events.map((event) => ({
@@ -358,7 +387,7 @@ export const requestReview = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards")
+    cardId: v.id("tickets")
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -383,7 +412,7 @@ export const approveReview = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards")
+    cardId: v.id("tickets")
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -411,7 +440,7 @@ export const rejectReview = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards")
+    cardId: v.id("tickets")
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -439,7 +468,7 @@ export const deleteCard = mutation({
   args: {
     projectId: v.id("projects"),
     externalId: v.string(),
-    cardId: v.id("cards")
+    cardId: v.id("tickets")
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -451,12 +480,30 @@ export const deleteCard = mutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Card not found." });
     }
 
-    const events = await ctx.db
-      .query("cardEvents")
-      .withIndex("by_cardId_movedAt", (q) => q.eq("cardId", args.cardId))
-      .collect();
+    const [events, comments, outgoingLinks, incomingLinks] = await Promise.all([
+      ctx.db
+        .query("ticketEvents")
+        .withIndex("by_ticketId_movedAt", (q) => q.eq("ticketId", args.cardId))
+        .collect(),
+      ctx.db
+        .query("ticketComments")
+        .withIndex("by_ticketId_createdAt", (q) => q.eq("ticketId", args.cardId))
+        .collect(),
+      ctx.db
+        .query("ticketLinks")
+        .withIndex("by_fromTicketId_type", (q) => q.eq("fromTicketId", args.cardId))
+        .collect(),
+      ctx.db
+        .query("ticketLinks")
+        .withIndex("by_toTicketId_type", (q) => q.eq("toTicketId", args.cardId))
+        .collect()
+    ]);
 
-    await Promise.all(events.map((event) => ctx.db.delete(event._id)));
+    await Promise.all(
+      [...events, ...comments, ...outgoingLinks, ...incomingLinks].map((document) =>
+        ctx.db.delete(document._id)
+      )
+    );
     await ctx.db.delete(args.cardId);
     return null;
   }

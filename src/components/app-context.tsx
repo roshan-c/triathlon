@@ -30,7 +30,7 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { data: session, isPending } = authClient.useSession();
-  const externalId = session?.user?.id as string | undefined;
+  const externalId = session?.user?.id;
 
   const projects = useQuery(
     cvx.projects.listMine,

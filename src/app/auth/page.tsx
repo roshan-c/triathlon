@@ -1,11 +1,19 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { IconChartLine, IconFlag, IconLayoutKanban, IconShieldCheck } from "@tabler/icons-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 
 type Mode = "login" | "signup";
+
+const featureTiles = [
+  { icon: <IconLayoutKanban size={16} />, label: "Realtime team board" },
+  { icon: <IconFlag size={16} />, label: "Sprint management" },
+  { icon: <IconChartLine size={16} />, label: "Auto metrics dashboard" },
+  { icon: <IconShieldCheck size={16} />, label: "Owner and admin project setup" }
+];
 
 export default function AuthPage() {
   const router = useRouter();
@@ -63,37 +71,47 @@ export default function AuthPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl items-center px-6 py-16">
       <div className="grid w-full gap-8 md:grid-cols-[1.2fr_1fr]">
-        <section className="panel p-8">
-          <p className="pill border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-text)]">Student teams</p>
-          <h1 className="mt-4 font-display text-4xl font-bold uppercase leading-tight text-[var(--foreground)]">
+        <section className="hidden md:block">
+          <p className="inline-flex items-center rounded-full border border-[var(--accent)]/25 bg-[var(--accent-soft)] px-3 py-1 text-xs font-medium text-[var(--accent-text)]">
+            Student teams
+          </p>
+          <h1 className="mt-5 text-4xl font-semibold leading-[1.1] tracking-tight text-[var(--foreground)]">
             Run your sprint board without Jira overhead.
           </h1>
-          <p className="muted mt-4 max-w-xl text-sm">
-            Plan tasks, drag cards across a realtime board, and track burndown, velocity, and cycle time automatically.
+          <p className="mt-4 max-w-xl text-sm leading-relaxed text-[var(--muted-foreground)]">
+            Plan tasks, drag tickets across a realtime board, and track burndown, velocity, and cycle time
+            automatically.
           </p>
-          <div className="mt-8 grid gap-3 text-sm sm:grid-cols-2">
-            <div className="rounded-lg border-2 border-[var(--border)] bg-[var(--background-alt)] p-3">Realtime team board</div>
-            <div className="rounded-lg border-2 border-[var(--border)] bg-[var(--background-alt)] p-3">Sprint management</div>
-            <div className="rounded-lg border-2 border-[var(--border)] bg-[var(--background-alt)] p-3">Auto metrics dashboard</div>
-            <div className="rounded-lg border-2 border-[var(--border)] bg-[var(--background-alt)] p-3">Owner/admin project setup</div>
+          <div className="mt-8 grid gap-3 sm:grid-cols-2">
+            {featureTiles.map((tile) => (
+              <div
+                key={tile.label}
+                className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--foreground)] shadow-[var(--shadow-sm)]"
+              >
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent-text)]">
+                  {tile.icon}
+                </span>
+                {tile.label}
+              </div>
+            ))}
           </div>
         </section>
 
-        <section className="panel p-6">
-          <div className="mb-5 flex gap-2 rounded-lg border-2 border-[var(--border)] bg-[var(--background-alt)] p-1">
+        <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-md)]">
+          <div className="mb-6 flex gap-1 rounded-xl bg-[var(--background-alt)] p-1">
             <button
               type="button"
-              className={`w-full rounded-md px-3 py-2 text-sm font-semibold uppercase ${
-                mode === "login" ? "btn-accent" : "btn-ghost"
+              className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                mode === "login" ? "bg-[var(--surface)] text-[var(--foreground)] shadow-[var(--shadow-sm)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
               }`}
               onClick={() => setMode("login")}
             >
-              Login
+              Log in
             </button>
             <button
               type="button"
-              className={`w-full rounded-md px-3 py-2 text-sm font-semibold uppercase ${
-                mode === "signup" ? "btn-accent" : "btn-ghost"
+              className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                mode === "signup" ? "bg-[var(--surface)] text-[var(--foreground)] shadow-[var(--shadow-sm)]" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
               }`}
               onClick={() => setMode("signup")}
             >
@@ -104,54 +122,56 @@ export default function AuthPage() {
           <form className="space-y-4" onSubmit={submit}>
             {mode === "signup" ? (
               <label className="block text-sm">
-                <span className="muted mb-1 block">Name</span>
+                <span className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">Name</span>
                 <input
                   value={name}
                   onChange={(event) => setName(event.target.value)}
-                  className="w-full rounded-md px-3 py-2"
+                  className="w-full"
                   required
                 />
               </label>
             ) : null}
 
             <label className="block text-sm">
-              <span className="muted mb-1 block">Email</span>
+              <span className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">Email</span>
               <input
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="w-full rounded-md px-3 py-2"
+                className="w-full"
                 required
                 type="email"
               />
             </label>
 
             <label className="block text-sm">
-              <span className="muted mb-1 block">Password</span>
+              <span className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">Password</span>
               <input
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
-                className="w-full rounded-md px-3 py-2"
+                className="w-full"
                 required
                 type="password"
                 minLength={8}
               />
             </label>
 
-            {error ? <p className="text-sm text-red-600">{error}</p> : null}
+            {error ? <p className="text-sm text-[var(--danger-text)]">{error}</p> : null}
 
             <button
               type="submit"
               disabled={isSubmitting}
-              className="btn-accent w-full rounded-md px-3 py-2.5 font-semibold uppercase disabled:opacity-50"
+              className="btn btn-primary w-full disabled:opacity-50"
             >
-              {isSubmitting ? "Working..." : mode === "signup" ? "Create account" : "Sign in"}
+              {isSubmitting ? "Working..." : mode === "signup" ? "Create account" : "Log in"}
             </button>
           </form>
 
-          <p className="muted mt-4 text-xs">After sign-in, choose or create a project workspace.</p>
-          <p className="muted mt-1 text-xs">
+          <p className="mt-4 text-xs text-[var(--muted-foreground)]">
+            After sign-in, choose or create a project workspace.
+          </p>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
             Need setup help? Open{" "}
-            <Link href="/onboarding" className="font-semibold underline decoration-2 underline-offset-2">
+            <Link href="/onboarding" className="font-medium text-[var(--accent-text)] underline decoration-1 underline-offset-2">
               project setup
             </Link>{" "}
             after you sign in.
