@@ -1,0 +1,3 @@
+# Sprint metrics use actual time and frozen completion snapshots
+
+Sprint dates express the plan, while explicit activation and completion timestamps define the measured interval. During an active sprint, provisional velocity, throughput, lead time, cycle time, daily completion, and burndown are reconstructed from the Activity log so scope and estimate changes remain visible. Velocity and throughput qualify a ticket only when it closed during the measured interval while belonging to the sprint and that approved revision remains Closed at completion; points are valued at completion. Completing the sprint freezes its membership and metric snapshot, so later ticket edits, deletion, restoration, or reopening never rewrite that history.
