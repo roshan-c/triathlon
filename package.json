@@ -6,6 +6,7 @@
   "bin": {
     "tri": "cli-dist/index.js"
   },
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
@@ -18,7 +19,9 @@
     "prepare": "npm run -s cli:build",
     "convex:dev": "convex dev",
     "convex:codegen": "convex codegen",
-    "auth:generate": "npx @better-auth/cli@latest generate --yes --config ./convex/betterAuth/auth.ts --output ./convex/betterAuth/schema.ts"
+    "auth:generate": "npx @better-auth/cli@latest generate --yes --config ./convex/betterAuth/auth.ts --output ./convex/betterAuth/schema.ts",
+    "server:dev": "npm run dev -w @triathlon/server",
+    "server:test": "npm run test -w @triathlon/server"
   },
   "dependencies": {
     "@convex-dev/better-auth": "0.10.13",
