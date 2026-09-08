@@ -9,7 +9,6 @@ import {
   IconLogout,
   IconMenu2,
   IconMoon,
-  IconPencil,
   IconPlus,
   IconSun
 } from "@tabler/icons-react";
@@ -25,7 +24,6 @@ const links = [
   { href: "/backlog", label: "Backlog", icon: IconClipboardList },
   { href: "/sprints", label: "Sprints", icon: IconFlag },
   { href: "/metrics", label: "Metrics", icon: IconChartLine },
-  { href: "/whiteboard", label: "Whiteboard", icon: IconPencil }
 ];
 
 type ProjectOption = {

@@ -27,6 +27,7 @@ export const HTTP_STATUS: Record<string, number> = Object.freeze({
   WORKFLOW_CONFIRMATION_REQUIRED: 409,
   SPRINT_COMPLETED: 409,
   REQUEST_TOO_LARGE: 413,
+  RATE_LIMITED: 429,
 });
 
 export type DomainCode = keyof typeof HTTP_STATUS;

@@ -92,16 +92,7 @@ export function registerProjectsRoutes(
     async (request, reply) => {
       const ctx = requireAuth(request);
       const projectId = request.params.projectId;
-      const role = await projects.roleFor(ctx.actor.userId, projectId);
-      if (role === "none" && ctx.actor.keyScope !== "instance") {
-        throw domainError("NOT_FOUND", "Project not found");
-      }
-      const deletedAllowed = role === "owner" || ctx.actor.keyScope === "instance";
-      const project = await projects.getProject(projectId);
-      if (!project || (project.deletedAt !== null && !deletedAllowed)) {
-        // Owners may still see their deleted project (restore surface).
-        if (project === null) throw domainError("NOT_FOUND", "Project not found");
-      }
+      const { project, role } = await projects.getProjectAccess(ctx, projectId);
       const columns = await projects.columnsFor(projectId);
       const members = await projects.listMembers(ctx, projectId);
       reply.send({ project, role: role === "owner" ? ("owner" as const) : ("member" as const), columns, members });
@@ -123,6 +114,12 @@ export function registerProjectsRoutes(
     async (request, reply) => {
       const ctx = requireAuth(request);
       const projectId = request.params.projectId;
+      if (request.body.name !== undefined && request.body.timezone !== undefined) {
+        throw domainError(
+          "VALIDATION_FAILED",
+          "Project name and timezone must be changed in separate atomic commands",
+        );
+      }
       if (request.body.name !== undefined) {
         await projects.renameProject(ctx, projectId, request.body.name);
       }
@@ -382,6 +379,12 @@ export function registerProjectsRoutes(
     async (request, reply) => {
       const ctx = requireAuth(request);
       const { projectId, columnId } = request.params;
+      if (request.body.name !== undefined && request.body.category !== undefined) {
+        throw domainError(
+          "VALIDATION_FAILED",
+          "Column name and category must be changed in separate atomic commands",
+        );
+      }
       if (request.body.name !== undefined) {
         await projects.renameColumn(ctx, projectId, columnId, request.body.name);
       }
@@ -461,12 +464,18 @@ export function registerProjectsRoutes(
       const columns = await projects.columnsFor(projectId);
       const out = [];
       for (const column of columns) {
-        const tickets = await work.listTickets(ctx, projectId, {
-          visibility: "open",
+        const page = await work.listTickets(ctx, projectId, {
+          visibility: column.category === "done" ? "closed" : "open",
           columnId: column.id,
-          limit: 500,
+          limit: 10_000,
         });
-        out.push({ column, tickets: tickets.items });
+        if (page.nextCursor !== null) {
+          throw domainError(
+            "VALIDATION_FAILED",
+            "Board snapshot exceeds the 10,000-ticket limit; use the paginated ticket endpoint",
+          );
+        }
+        out.push({ column, tickets: page.items });
       }
       reply.send(out);
     },

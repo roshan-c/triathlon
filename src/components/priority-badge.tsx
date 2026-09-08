@@ -1,4 +1,4 @@
-import { Priority } from "@/lib/convex";
+import type { Priority } from "@/lib/api";
 
 const classes: Record<Priority, string> = {
   low: "bg-[var(--ok-soft)] text-[var(--ok-text)]",

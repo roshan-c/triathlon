@@ -270,6 +270,26 @@ test("burndown tracks scope and estimate changes; project timezone keys the days
   assert.equal(after.burndown[0]?.pointsRemaining, 8);
 });
 
+test("burndown begins with scope assembled before sprint activation", async () => {
+  const { w, member, project, setNow } = await world();
+  setNow("2026-09-07T08:00:00Z");
+  const sprint = await w.planning.createSprint(w.ctx(member.id), project.id, { name: "S" });
+  const ticket = await w.work.createTicket(w.ctx(member.id), project.id, {
+    title: "Planned work",
+    points: 5,
+  });
+  await w.planning.addTickets(w.ctx(member.id), project.id, sprint.id, {
+    ticketIds: [ticket.id],
+  });
+
+  setNow("2026-09-07T09:00:00Z");
+  await w.planning.activateSprint(w.ctx(member.id), project.id, sprint.id);
+  setNow("2026-09-07T17:00:00Z");
+  const metrics = await w.planning.metrics(w.ctx(member.id), project.id, sprint.id);
+
+  assert.equal(metrics.burndown[0]?.pointsRemaining, 5);
+});
+
 test("cycle time uses the latest not_started -> started transition", async () => {
   const { w, member, project, setNow } = await world();
   const cols = await w.projects.columnsFor(project.id);

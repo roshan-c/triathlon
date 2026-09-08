@@ -91,12 +91,23 @@ test("positions are explicit and atomic; moves cannot cross the Done boundary", 
   const t2After = await w.work.getTicketDetail(w.ctx(member.id), project.id, t2.id);
   assert.equal(t2After?.ticket.position, 2);
 
+  // Moving downward within the same column closes the old slot first.
+  const movedDown = await w.work.moveTicket(
+    w.ctx(member.id),
+    project.id,
+    String(t1.number),
+    t1After?.ticket.resourceVersion ?? 0,
+    { columnId: t1.columnId, position: 2 },
+  );
+  assert.equal(movedDown.position, 2);
+  assert.equal((await w.work.getTicketDetail(w.ctx(member.id), project.id, t2.id))?.ticket.position, 1);
+
   // Cross-column move.
   const cross = await w.work.moveTicket(
     w.ctx(member.id),
     project.id,
     String(t1.number),
-    t1After?.ticket.resourceVersion ?? 0,
+    movedDown.resourceVersion,
     { columnId: todo.id, position: 0 },
   );
   assert.equal(cross.columnId, todo.id);
@@ -388,6 +399,42 @@ test("tombstones keep history: restored Closed tickets stay Closed; activity is 
   await w.projects.joinProject(w.ctx(other.id), (await invite(w, owner, project.id)).code);
   const visible = await w.work.activity(w.ctx(other.id), project.id, { limit: 1 });
   assert.ok(visible.items.length >= 1);
+});
+
+test("Activity is person-attributed and survives permanent ticket purge", async () => {
+  const { w, owner, member, project } = await worldWithProject();
+  const automation = await w.identity.createAutomation(w.ctx(member.id), "Worker");
+  const automationContext = {
+    actor: {
+      userId: member.id,
+      automationId: automation.id,
+      keyScope: "project" as const,
+      keyProjectId: project.id,
+    },
+    requestId: "req-automation",
+  };
+  const ticket = await w.work.createTicket(automationContext, project.id, {
+    title: "Automated work",
+  });
+  await w.work.deleteTicket(
+    w.ctx(member.id),
+    project.id,
+    String(ticket.number),
+    ticket.resourceVersion,
+  );
+  await w.work.purgeTicket(w.ctx(owner.id), project.id, String(ticket.number));
+
+  const activity = await w.work.activity(w.ctx(member.id), project.id, {});
+  const created = activity.items.find((entry) => entry.type === "ticket.created");
+  assert.ok(created);
+  assert.equal(created.actorUserId, member.id);
+  assert.equal("actorAutomationId" in created, false);
+  const stored = await w.db
+    .selectFrom("activity")
+    .select("actor_automation_id")
+    .where("id", "=", created.id)
+    .executeTakeFirstOrThrow();
+  assert.equal(stored.actor_automation_id, null);
 });
 
 async function invite(

@@ -26,6 +26,34 @@ import type {
 } from "./context.js";
 import type { ProjectEvent, ProjectEventBus } from "./events.js";
 
+/**
+ * Opaque transaction capability shared between domain modules. Kysely stays
+ * an implementation detail of the module that owns the database; callers can
+ * pass atomicity across a seam without gaining a query-builder surface.
+ */
+const domainTransactionBrand: unique symbol = Symbol("triathlon.domainTransaction");
+export interface DomainTransaction {
+  readonly [domainTransactionBrand]: true;
+}
+
+const transactionStore = new WeakMap<DomainTransaction, Transaction<DbSchema>>();
+
+export function asDomainTransaction(
+  trx: Transaction<DbSchema>,
+): DomainTransaction {
+  const handle: DomainTransaction = { [domainTransactionBrand]: true };
+  transactionStore.set(handle, trx);
+  return handle;
+}
+
+export function unwrapDomainTransaction(
+  trx: DomainTransaction,
+): Transaction<DbSchema> {
+  const database = transactionStore.get(trx);
+  if (!database) throw new Error("Unknown domain transaction handle");
+  return database;
+}
+
 export interface CommandSpec {
   /** Stable operation name, e.g. "ticket.create", used in Audit. */
   operation: string;
@@ -58,6 +86,51 @@ export interface RunOptions<TReturn> {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function activityWithBeforeAfter(payload: Json | undefined): Json {
+  const value = payload ?? {};
+  if (value === null || Array.isArray(value) || Object(value) !== value) {
+    return { before: null, after: value };
+  }
+  // SAFETY: Json values that are not null, arrays, or primitives are object
+  // records by the Json definition at this module boundary.
+  const object = value as Record<string, Json>;
+  const hasBefore = Object.prototype.hasOwnProperty.call(object, "before");
+  const hasAfter = Object.prototype.hasOwnProperty.call(object, "after");
+  return {
+    ...object,
+    before: hasBefore && object.before !== undefined ? object.before : null,
+    after: hasAfter && object.after !== undefined ? object.after : hasAfter ? null : value,
+  };
+}
+
+async function appendAudit(
+  executor: Db,
+  ctx: RequestContext,
+  spec: CommandSpec,
+  id: string,
+  occurredAt: string,
+  result: "ok" | "error",
+  detail: string | null,
+): Promise<void> {
+  await executor
+    .insertInto("audit_log")
+    .values({
+      id,
+      request_id: ctx.requestId,
+      occurred_at: occurredAt,
+      actor_user_id: ctx.actor.userId,
+      actor_automation_id: ctx.actor.automationId ?? null,
+      actor_key_id: ctx.actor.keyId ?? null,
+      client_header: ctx.clientHeader ?? null,
+      operation: spec.operation,
+      target_type: spec.targetType ?? null,
+      target_id: spec.targetId ?? null,
+      result,
+      detail,
+    })
+    .execute();
 }
 
 export async function runCommand<TReturn>(opts: RunOptions<TReturn>): Promise<TReturn> {
@@ -112,28 +185,12 @@ export async function runCommand<TReturn>(opts: RunOptions<TReturn>): Promise<TR
         displayName = user?.display_name ?? "";
       }
 
-      await trx
-        .insertInto("audit_log")
-        .values({
-          id: ids.uuidv7(),
-          request_id: ctx.requestId,
-          occurred_at: now,
-          actor_user_id: ctx.actor.userId,
-          actor_automation_id: ctx.actor.automationId ?? null,
-          actor_key_id: ctx.actor.keyId ?? null,
-          client_header: ctx.clientHeader ?? null,
-          operation: spec.operation,
-          target_type: spec.targetType ?? null,
-          target_id: spec.targetId ?? null,
-          result: "ok",
-          detail: spec.detail ?? null,
-        })
-        .execute();
+      await appendAudit(trx, ctx, spec, ids.uuidv7(), now, "ok", spec.detail ?? null);
 
       if (spec.projectId !== undefined && spec.activityType !== undefined) {
         // The command body may replace activityPayload (e.g. with ids and
         // numbers allocated inside the transaction) before returning.
-        const payload = spec.activityPayload ?? null;
+        const payload = activityWithBeforeAfter(spec.activityPayload);
         const row = await trx
           .selectFrom("activity")
           .select((eb) => eb.fn.max<number>("seq").as("m"))
@@ -149,11 +206,13 @@ export async function runCommand<TReturn>(opts: RunOptions<TReturn>): Promise<TR
             occurred_at: now,
             actor_user_id: ctx.actor.userId,
             actor_display_name: displayName,
-            actor_automation_id: ctx.actor.automationId ?? null,
+            // Activity is person-attributed. Automation identity belongs only
+            // in the owner-visible Audit record above.
+            actor_automation_id: null,
             type: spec.activityType,
             target_type: spec.targetType ?? null,
             target_id: spec.targetId ?? null,
-            payload_json: payload === null ? "{}" : JSON.stringify(payload),
+            payload_json: JSON.stringify(payload),
           })
           .execute();
 
@@ -171,13 +230,12 @@ export async function runCommand<TReturn>(opts: RunOptions<TReturn>): Promise<TR
             actor: {
               userId: ctx.actor.userId,
               displayName,
-              automationId: ctx.actor.automationId,
             },
             resource:
               spec.targetType !== undefined && spec.targetId !== undefined
                 ? { type: spec.targetType, id: spec.targetId }
                 : null,
-            data: payload ?? {},
+            data: payload,
           },
         });
       }
@@ -217,23 +275,15 @@ export async function runCommand<TReturn>(opts: RunOptions<TReturn>): Promise<TR
   } catch (error) {
     // Record the failure in Audit without losing it to the rollback.
     try {
-      await db
-        .insertInto("audit_log")
-        .values({
-          id: ids.uuidv7(),
-          request_id: ctx.requestId,
-          occurred_at: now,
-          actor_user_id: ctx.actor.userId,
-          actor_automation_id: ctx.actor.automationId ?? null,
-          actor_key_id: ctx.actor.keyId ?? null,
-          client_header: ctx.clientHeader ?? null,
-          operation: spec.operation,
-          target_type: spec.targetType ?? null,
-          target_id: spec.targetId ?? null,
-          result: "error",
-          detail: error instanceof Error ? error.message : String(error),
-        })
-        .execute();
+      await appendAudit(
+        db,
+        ctx,
+        spec,
+        ids.uuidv7(),
+        now,
+        "error",
+        error instanceof Error ? error.message : String(error),
+      );
     } catch {
       // Audit is best-effort; never mask the original failure.
     }

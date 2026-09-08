@@ -120,6 +120,13 @@ export const TicketSummarySchema = Type.Object({
   position: Type.Integer(),
   revision: Type.Integer(),
   resourceVersion: Type.Integer(),
+  reviewState: Type.Union([
+    Type.Literal("unreviewed"),
+    Type.Literal("requested"),
+    Type.Literal("approved"),
+    Type.Literal("rejected"),
+  ]),
+  sprintId: Type.Union([Type.String(), Type.Null()]),
   createdAt: Type.String(),
   deletedAt: Type.Union([Type.String(), Type.Null()]),
   category: Type.Union([
@@ -230,7 +237,6 @@ export const ActivityEntrySchema = Type.Object({
   occurredAt: Type.String(),
   actorUserId: Type.String(),
   actorDisplayName: Type.String(),
-  actorAutomationId: Type.Union([Type.String(), Type.Null()]),
   type: Type.String(),
   targetType: Type.Union([Type.String(), Type.Null()]),
   targetId: Type.Union([Type.String(), Type.Null()]),

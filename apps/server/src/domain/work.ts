@@ -12,7 +12,6 @@
  * commands; do not call them from HTTP.
  */
 
-import { sql } from "kysely";
 import type { Kysely, Transaction } from "kysely";
 import type { Database as DbSchema } from "../db/types.js";
 import type { ColumnCategory } from "../db/types.js";
@@ -22,9 +21,10 @@ import type { Clock } from "../time.js";
 import type { Ids } from "../ids.js";
 import type { Json } from "./context.js";
 import type { RequestContext } from "./context.js";
+import type { ProjectEvent } from "./events.js";
 import { requireOpenProject as requireOpenProjectSeam } from "./projects.js";
 import type { Column, ProjectsSeam } from "./projects.js";
-import { runCommand } from "./tx.js";
+import { asDomainTransaction, runCommand, type DomainTransaction, unwrapDomainTransaction } from "./tx.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +52,8 @@ export interface Ticket {
   position: number;
   revision: number;
   resourceVersion: number;
+  reviewState: ReviewStateName;
+  sprintId: string | null;
   labels: string[];
   parentId: string | null;
   createdBy: string;
@@ -73,6 +75,8 @@ export interface TicketSummary {
   position: number;
   revision: number;
   resourceVersion: number;
+  reviewState: ReviewStateName;
+  sprintId: string | null;
   createdAt: string;
   deletedAt: string | null;
   category: ColumnCategory;
@@ -123,7 +127,6 @@ export interface ActivityEntry {
   occurredAt: string;
   actorUserId: string;
   actorDisplayName: string;
-  actorAutomationId: string | null;
   type: string;
   targetType: string | null;
   targetId: string | null;
@@ -186,6 +189,8 @@ export interface TicketCore {
   assigneeId: string | null;
   columnId: string;
   position: number;
+  revision: number;
+  reviewState: ReviewStateName;
   category: ColumnCategory;
   deletedAt: string | null;
   createdAt: string;
@@ -193,19 +198,19 @@ export interface TicketCore {
 
 /** Narrow seam consumed by Planning: ticket facts for metrics. */
 export interface WorkSeam {
-  ticketCore(projectId: string, ticketId: string, trx?: Kysely<DbSchema>): Promise<TicketCore | null>;
+  ticketCore(projectId: string, ticketId: string, trx?: DomainTransaction): Promise<TicketCore | null>;
 }
 
 /** Trx-scoped helpers for the Projects module's atomic commands. */
 export interface WorkMutations {
   unassignOpenTickets(
-    trx: Transaction<DbSchema>,
+    trx: DomainTransaction,
     projectId: string,
     userId: string,
     _now: string,
   ): Promise<number>;
   moveColumnTickets(
-    trx: Transaction<DbSchema>,
+    trx: DomainTransaction,
     projectId: string,
     fromColumnId: string,
     toColumnId: string,
@@ -259,6 +264,7 @@ export interface WorkService {
   purgeTicket(ctx: RequestContext, projectId: string, ref: string): Promise<void>;
   frontier(ctx: RequestContext, projectId: string, opts: { cursor?: string; limit?: number }): Promise<Paged<TicketSummary>>;
   activity(ctx: RequestContext, projectId: string, opts: { cursor?: string; limit?: number }): Promise<Paged<ActivityEntry>>;
+  replayEvents(ctx: RequestContext, projectId: string, afterSequence: number): Promise<ProjectEvent[]>;
 }
 
 export interface WorkDeps {
@@ -355,12 +361,13 @@ function validateBody(body: string, what: string): string {
 
 export const workMutations: WorkMutations = {
   unassignOpenTickets: async (trx, projectId, userId, _now) => {
-    const doneSub = trx
+    const database = unwrapDomainTransaction(trx);
+    const doneSub = database
       .selectFrom("columns")
       .select("id")
       .where("project_id", "=", projectId)
       .where("category", "=", "done");
-    const rows = await trx
+    const rows = await database
       .selectFrom("tickets")
       .select(["id"])
       .where("project_id", "=", projectId)
@@ -370,7 +377,7 @@ export const workMutations: WorkMutations = {
       .execute();
     for (const row of rows) {
       // Assignment is reviewable material: bump revision and resource version.
-      await trx
+      await database
         .updateTable("tickets")
         .set((eb) => ({
           assignee_id: null,
@@ -383,14 +390,15 @@ export const workMutations: WorkMutations = {
     return rows.length;
   },
   moveColumnTickets: async (trx, projectId, fromColumnId, toColumnId) => {
-    const base = await trx
+    const database = unwrapDomainTransaction(trx);
+    const base = await database
       .selectFrom("tickets")
       .select((eb) => eb.fn.max<number>("position").as("m"))
       .where("project_id", "=", projectId)
       .where("column_id", "=", toColumnId)
       .executeTakeFirst();
     let position = (base?.m ?? -1) + 1;
-    const rows = await trx
+    const rows = await database
       .selectFrom("tickets")
       .select(["id"])
       .where("project_id", "=", projectId)
@@ -399,7 +407,7 @@ export const workMutations: WorkMutations = {
       .execute();
     for (const row of rows) {
       const p = position++;
-      await trx
+      await database
         .updateTable("tickets")
         .set((eb) => ({
           column_id: toColumnId,
@@ -457,6 +465,8 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
       position: row.position,
       revision: row.revision,
       resourceVersion: row.resource_version,
+      reviewState: "unreviewed",
+      sprintId: null,
       // SAFETY: the column stores only literals written by this module.
       labels: JSON.parse(row.labels_json) as string[],
       parentId: row.parent_id,
@@ -483,6 +493,8 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
       position: t.position,
       revision: t.revision,
       resourceVersion: t.resourceVersion,
+      reviewState: t.reviewState,
+      sprintId: t.sprintId,
       createdAt: t.createdAt,
       deletedAt: t.deletedAt,
       category: t.category,
@@ -517,8 +529,8 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
   const requireOpenProject = (
     ctx: RequestContext,
     projectId: string,
-    trx?: Kysely<DbSchema>,
-  ): Promise<void> => requireOpenProjectSeam(deps.projects, ctx, projectId, trx);
+    trx?: Transaction<DbSchema>,
+  ): Promise<void> => requireOpenProjectSeam(deps.projects, ctx, projectId, trx ? asDomainTransaction(trx) : undefined);
 
   async function resolveRef(
     trx: Kysely<DbSchema>,
@@ -832,10 +844,39 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
     };
   }
 
+  async function currentSprintId(
+    database: Kysely<DbSchema>,
+    projectId: string,
+    ticketId: string,
+  ): Promise<string | null> {
+    const row = await database
+      .selectFrom("sprint_members")
+      .innerJoin("sprints", "sprints.id", "sprint_members.sprint_id")
+      .select("sprint_members.sprint_id")
+      .where("sprints.project_id", "=", projectId)
+      .where("sprint_members.ticket_id", "=", ticketId)
+      .where("sprint_members.removed_at", "is", null)
+      .where("sprints.deleted_at", "is", null)
+      .where("sprints.state", "in", ["planned", "active"])
+      .executeTakeFirst();
+    return row?.sprint_id ?? null;
+  }
+
+  async function toTicketWithDetails(
+    database: Kysely<DbSchema>,
+    projectId: string,
+    row: TicketRow,
+  ): Promise<Ticket> {
+    const ticket = toTicket(row);
+    const review = await reviewForRevision(database, ticket.id, ticket.revision);
+    const sprintId = await currentSprintId(database, projectId, ticket.id);
+    return { ...ticket, reviewState: review.state, sprintId };
+  }
+
   const service: WorkSeam & WorkService = {
     // ---- WorkSeam ----
-    ticketCore: async (projectId, ticketId, trx) => {
-      const row = await (trx ?? db)
+    ticketCore: async (projectId, ticketId, domainTrx) => {
+      const row = await (domainTrx ? unwrapDomainTransaction(domainTrx) : db)
         .selectFrom("tickets")
         .innerJoin("columns", "columns.id", "tickets.column_id")
         .select([
@@ -848,6 +889,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
           "tickets.assignee_id",
           "tickets.column_id",
           "tickets.position",
+          "tickets.revision",
           "tickets.created_at",
           "tickets.deleted_at",
           "columns.category",
@@ -856,6 +898,11 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
         .where("tickets.id", "=", ticketId)
         .executeTakeFirst();
       if (!row) return null;
+      const review = await reviewForRevision(
+        domainTrx ? unwrapDomainTransaction(domainTrx) : db,
+        row.id,
+        row.revision,
+      );
       return {
         id: row.id,
         number: row.number,
@@ -868,6 +915,8 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
         assigneeId: row.assignee_id,
         columnId: row.column_id,
         position: row.position,
+        revision: row.revision,
+        reviewState: review.state,
         // SAFETY: the column stores only literals written by this module.
         category: row.category as ColumnCategory,
         deletedAt: row.deleted_at,
@@ -1000,7 +1049,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             columnId,
             columnCategory: column.category,
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1029,6 +1078,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
           })),
         );
       const review = await reviewForRevision(db, ticket.id, ticket.revision);
+      const sprintId = await currentSprintId(db, projectId, ticket.id);
 
       const refQuery = (linkFilter: "blocker_id" | "blocked_id", target: string, other: "blocker_id" | "blocked_id") =>
         db
@@ -1087,12 +1137,23 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
                 : null,
             )
         : null;
-      return { ticket, comments, review, blockers, blockedBy, children, parent };
+      return {
+        ticket: { ...ticket, reviewState: review.state, sprintId },
+        comments,
+        review,
+        blockers,
+        blockedBy,
+        children,
+        parent,
+      };
     },
 
     listTickets: async (ctx, projectId, filter) => {
       await requireOpenProject(ctx, projectId);
-      const limit = Math.min(filter.limit ?? 50, 200);
+      // Public list routes cap their input at 200; board snapshots may use
+      // the documented 10,000-ticket project target without being silently
+      // truncated.
+      const limit = Math.min(filter.limit ?? 50, 10_000);
       let query = ticketBase()
         .where("tickets.project_id", "=", projectId)
         .orderBy("tickets.number", "desc");
@@ -1120,7 +1181,15 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
         query = query.where("tickets.number", "<", Number.parseInt(filter.cursor, 10));
       }
       const rows = await query.limit(limit + 1).execute();
-      const items = rows.slice(0, limit).map(toSummary);
+      const items = await Promise.all(rows.slice(0, limit).map(async (row) => {
+        const item = toSummary(row);
+        const review = await reviewForRevision(db, item.id, item.revision);
+        return {
+          ...item,
+          reviewState: review.state,
+          sprintId: await currentSprintId(db, projectId, item.id),
+        };
+      }));
       return {
         items,
         nextCursor:
@@ -1213,7 +1282,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
 
           const materialChanged = Object.keys(applied).length > 0;
           if (!materialChanged) {
-            return toTicket(before);
+            return toTicketWithDetails(trx, projectId, before);
           }
           await trx
             .updateTable("tickets")
@@ -1225,12 +1294,20 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             .where("id", "=", resolved.id)
             .execute();
           const row = await loadTicketRow(trx, projectId, resolved.id);
+          const beforeValues = Object.fromEntries(
+            Object.entries(applied).map(([key, value]) => [key, value.before]),
+          );
+          const afterValues = Object.fromEntries(
+            Object.entries(applied).map(([key, value]) => [key, value.after]),
+          );
           spec.activityPayload = {
             ticketId: row.id,
             number: row.number,
             changes: applied,
+            before: beforeValues,
+            after: afterValues,
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1269,16 +1346,16 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
               "Open tickets cannot be moved into Done; Resolve is the only way in",
             );
           }
-          const sameColumn = target.id === ticket.column_id;
-          if (!sameColumn) {
-            await removeFromColumn(
-              trx,
-              projectId,
-              ticket.column_id,
-              ticket.position,
-              ticket.id,
-            );
-          }
+          // Remove the old slot even for same-column moves. This closes the
+          // old gap before the destination slot is inserted and keeps every
+          // active column position contiguous.
+          await removeFromColumn(
+            trx,
+            projectId,
+            ticket.column_id,
+            ticket.position,
+            ticket.id,
+          );
           const position = await insertAtPosition(
             trx,
             projectId,
@@ -1299,14 +1376,21 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
           spec.activityPayload = {
             ticketId: row.id,
             number: row.number,
+            points: row.points,
             fromColumnId: ticket.column_id,
             fromPosition: ticket.position,
             fromCategory: currentCategory,
             toColumnId: target.id,
             toPosition: position,
             toCategory: target.category,
+            before: {
+              columnId: ticket.column_id,
+              position: ticket.position,
+              category: currentCategory,
+            },
+            after: { columnId: target.id, position, category: target.category },
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1416,7 +1500,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             number: row.number,
             addedBlockerIds: unique,
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1461,7 +1545,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             number: row.number,
             removedBlockerId: blockerId,
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1615,9 +1699,10 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
               "Resolve requires an approved review of the current revision",
             );
           }
-          const done = await deps.projects.doneColumn(projectId, trx);
+          const done = await deps.projects.doneColumn(projectId, asDomainTransaction(trx));
           if (!done) throw domainError("INVALID_STATE", "Project has no Done column");
-          const position = await columnCount(trx, projectId, done.id);
+          await removeFromColumn(trx, projectId, ticket.column_id, ticket.position, ticket.id);
+          const position = await insertAtPosition(trx, projectId, done.id, Number.MAX_SAFE_INTEGER, ticket.id);
           await trx
             .insertInto("comments")
             .values({
@@ -1642,9 +1727,12 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             ticketId: row.id,
             number: row.number,
             points: row.points,
+            revision: ticket.revision,
             columnId: done.id,
+            before: { columnId: ticket.column_id, category: ticket.category },
+            after: { columnId: done.id, category: row.category },
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1688,7 +1776,14 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
               })
               .execute();
           }
-          const position = await columnCount(trx, projectId, destination.id);
+          await removeFromColumn(trx, projectId, ticket.column_id, ticket.position, ticket.id);
+          const position = await insertAtPosition(
+            trx,
+            projectId,
+            destination.id,
+            Number.MAX_SAFE_INTEGER,
+            ticket.id,
+          );
           await trx
             .updateTable("tickets")
             .set((eb) => ({
@@ -1708,8 +1803,10 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             toPosition: position,
             toCategory: destination.category,
             newRevision: row.revision,
+            before: { columnId: ticket.column_id, category: ticket.category, revision: ticket.revision },
+            after: { columnId: destination.id, category: destination.category, revision: row.revision },
           };
-          return toTicket(row);
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1733,6 +1830,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
           if (ticket.deleted_at !== null) {
             throw domainError("INVALID_STATE", "Ticket is already deleted");
           }
+          await removeFromColumn(trx, projectId, ticket.column_id, ticket.position, ticket.id);
           await trx
             .updateTable("tickets")
             .set((eb) => ({
@@ -1742,8 +1840,13 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             .where("id", "=", resolved.id)
             .execute();
           const row = await loadTicketRow(trx, projectId, resolved.id);
-          spec.activityPayload = { ticketId: row.id, number: row.number };
-          return toTicket(row);
+          spec.activityPayload = {
+            ticketId: row.id,
+            number: row.number,
+            before: { deletedAt: ticket.deleted_at },
+            after: { deletedAt: row.deleted_at },
+          };
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1766,17 +1869,30 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
           if (ticket.deleted_at === null) {
             throw domainError("INVALID_STATE", "Ticket is not deleted");
           }
+          const position = await insertAtPosition(
+            trx,
+            projectId,
+            ticket.column_id,
+            ticket.position,
+            ticket.id,
+          );
           await trx
             .updateTable("tickets")
             .set((eb) => ({
               deleted_at: null,
+              position,
               resource_version: eb("resource_version", "+", 1),
             }))
             .where("id", "=", resolved.id)
             .execute();
           const row = await loadTicketRow(trx, projectId, resolved.id);
-          spec.activityPayload = { ticketId: row.id, number: row.number };
-          return toTicket(row);
+          spec.activityPayload = {
+            ticketId: row.id,
+            number: row.number,
+            before: { deletedAt: ticket.deleted_at },
+            after: { deletedAt: row.deleted_at },
+          };
+          return toTicketWithDetails(trx, projectId, row);
         },
       }),
 
@@ -1792,7 +1908,7 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
           activityType: "ticket.purged",
           targetType: "ticket",
         },
-        run: async (trx, _spec) => {
+        run: async (trx, spec) => {
           const admin = await trx
             .selectFrom("users")
             .select("is_instance_admin")
@@ -1813,12 +1929,14 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
             );
           }
           await trx.deleteFrom("tickets").where("id", "=", resolved.id).execute();
-          // Remove activity rows referencing this ticket; comments, links,
-          // review records and sprint memberships cascade.
-          await trx
-            .deleteFrom("activity")
-            .where(sql`json_extract(payload_json, '$.ticketId')`, "=", resolved.id)
-            .execute();
+          spec.activityPayload = {
+            ticketId: ticket.id,
+            number: ticket.number,
+            before: { deletedAt: ticket.deleted_at },
+            after: null,
+          };
+          // Comments, links, review records and sprint memberships cascade.
+          // Activity permanently retains the purged ticket's identifier.
         },
       }),
 
@@ -1875,7 +1993,6 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
         occurredAt: r.occurred_at,
         actorUserId: r.actor_user_id,
         actorDisplayName: r.actor_display_name,
-        actorAutomationId: r.actor_automation_id,
         type: r.type,
         targetType: r.target_type,
         targetId: r.target_id,
@@ -1888,8 +2005,37 @@ export function createWorkService(deps: WorkDeps): WorkSeam & WorkService {
         nextCursor: rows.length > limit ? String(items[items.length - 1]?.seq ?? "") : null,
       };
     },
+
+    replayEvents: async (ctx, projectId, afterSequence) => {
+      await requireOpenProject(ctx, projectId);
+      const rows = await db
+        .selectFrom("activity")
+        .selectAll()
+        .where("project_id", "=", projectId)
+        .where("seq", ">", afterSequence)
+        .orderBy("seq", "asc")
+        .limit(1000)
+        .execute();
+      return rows.map((row) => ({
+        sequence: row.seq,
+        eventId: row.id,
+        eventType: row.type,
+        schemaVersion: 1,
+        projectId: row.project_id,
+        timestamp: row.occurred_at,
+        actor: {
+          userId: row.actor_user_id,
+          displayName: row.actor_display_name,
+        },
+        resource:
+          row.target_type !== null && row.target_id !== null
+            ? { type: row.target_type, id: row.target_id }
+            : null,
+        // SAFETY: activity payloads are written as JSON by runCommand.
+        data: JSON.parse(row.payload_json) as Json,
+      }));
+    },
   };
 
   return service;
 }
-

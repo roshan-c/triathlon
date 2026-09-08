@@ -1,10 +1,9 @@
 "use client";
 
-import { useMutation, useQuery } from "convex/react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo } from "react";
 import { authClient } from "@/lib/auth-client";
-import { cvx } from "@/lib/convex";
+import { api, useMutation, useProjectEvents, useQuery } from "@/lib/api";
 
 type ProjectSummary = {
   projectId: string;
@@ -32,17 +31,12 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
   const { data: session, isPending } = authClient.useSession();
   const externalId = session?.user?.id;
 
-  const projects = useQuery(
-    cvx.projects.listMine,
-    externalId
-      ? {
-          externalId
-        }
-      : "skip"
-  );
+  // SAFETY: the API adapter maps project access responses to this legacy
+  // view-model shape for the preserved web UI.
+  const projects = useQuery(api.projects.listMine, externalId ? { externalId } : "skip") as ProjectSummary[] | undefined;
 
   const createAccess = useQuery(
-    cvx.projects.canCreate,
+    api.projects.canCreate,
     externalId
       ? {
           externalId
@@ -50,7 +44,7 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
       : "skip"
   );
 
-  const syncProfile = useMutation(cvx.users.syncProfile);
+  const syncProfile = useMutation(api.users.syncProfile);
 
   const queryString = searchParams.toString();
   const requestedProjectId = searchParams.get("projectId");
@@ -66,6 +60,7 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
 
     return selected ?? projects[0];
   }, [projects, requestedProjectId]);
+  useProjectEvents(project?.projectId);
 
   useEffect(() => {
     if (isPending) {

@@ -17,6 +17,10 @@ timezone: UTC
 trustedOrigins:
   - http://localhost:3000
 
+auth:
+  # Generate with: openssl rand -base64 32
+  secret: replace-with-a-random-32-byte-secret
+
 session:
   cookieName: tri_session
   ttlDays: 30
@@ -36,6 +40,12 @@ instanceWideKeys:
 
 maintenance:
   intervalMinutes: 60
+
+backups:
+  directory: ./backups
+  enabled: true
+  dailyRetention: 7
+  weeklyRetention: 4
 
 docs:
   enabled: true

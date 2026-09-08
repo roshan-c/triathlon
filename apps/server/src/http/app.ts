@@ -8,11 +8,12 @@ import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 import type { FastifyInstance, FastifyBaseLogger, RawServerDefault } from "fastify";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import type { Config } from "../config.js";
-import type { Database as DbSchema } from "../db/types.js";
+import type { AuthModule } from "../auth.js";
 import type { Clock } from "../time.js";
 import type { Ids } from "../ids.js";
 import type { RequestContext } from "../domain/context.js";
@@ -21,7 +22,6 @@ import type { ProjectsService } from "../domain/projects.js";
 import type { WorkService } from "../domain/work.js";
 import type { PlanningService } from "../domain/planning.js";
 import type { ProjectEventBus } from "../domain/events.js";
-import type { Kysely } from "kysely";
 import { DomainError } from "../errors.js";
 import { registerAuthHook } from "./auth.js";
 import { fastifyValidationFields, sendProblem } from "./problem.js";
@@ -42,11 +42,11 @@ export type App = FastifyInstance<
 
 export interface AppDeps {
   config: Config;
-  db: Kysely<DbSchema>;
   clock: Clock;
   ids: Ids;
   serverVersion: string;
   identity: IdentityService;
+  auth: AuthModule;
   projects: ProjectsService;
   work: WorkService;
   planning: PlanningService;
@@ -77,7 +77,9 @@ export async function buildApp(deps: AppDeps): Promise<App> {
 
   await app.register(cookie);
   await app.register(cors, {
-    origin: config.trustedOrigins.length > 0 ? config.trustedOrigins : true,
+    // An empty allowlist means same-origin deployment only; never turn an
+    // omitted allowlist into credentialed CORS for every origin.
+    origin: config.trustedOrigins.length > 0 ? config.trustedOrigins : false,
     credentials: true,
   });
   await app.register(swagger, {
@@ -98,8 +100,14 @@ export async function buildApp(deps: AppDeps): Promise<App> {
       },
     },
   });
+  if (config.docs.enabled) {
+    await app.register(swaggerUi, {
+      routePrefix: "/docs",
+      uiConfig: { docExpansion: "list", deepLinking: false },
+    });
+  }
 
-  registerAuthHook(app, { config, identity: deps.identity });
+  registerAuthHook(app, { config, identity: deps.identity, auth: deps.auth });
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof DomainError) {
@@ -130,7 +138,7 @@ export async function buildApp(deps: AppDeps): Promise<App> {
     reply.header("content-type", "application/json").send(doc);
   });
 
-  const authDeps = { config, identity: deps.identity };
+  const authDeps = { config, identity: deps.identity, auth: deps.auth };
   registerAuthRoutes(app, authDeps);
   registerKeysRoutes(app, {
     serverVersion: deps.serverVersion,
@@ -150,9 +158,8 @@ export async function buildApp(deps: AppDeps): Promise<App> {
     planning: deps.planning,
   });
   registerEventsRoute(app, {
-    db: deps.db,
     bus: deps.bus,
-    projects: deps.projects,
+    work: deps.work,
   });
 
   return app;

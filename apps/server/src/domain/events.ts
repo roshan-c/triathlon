@@ -1,9 +1,9 @@
 /**
  * In-process pub/sub for project-scoped Server-Sent Events.
  *
- * Commands publish after their transaction commits; the SSE route replays
- * committed activity from the database before subscribing, so a subscriber
- * never misses events between reads.
+ * Commands publish after their transaction commits; the SSE route subscribes
+ * before replaying committed activity and deduplicates by sequence, so a
+ * subscriber never misses events between reads.
  */
 
 import { EventEmitter } from "node:events";
@@ -21,7 +21,6 @@ export interface ProjectEvent {
   actor: {
     userId: string;
     displayName: string;
-    automationId?: string;
   };
   resource: {
     type: string;

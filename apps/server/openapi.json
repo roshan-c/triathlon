@@ -106,34 +106,6 @@
         }
       }
     },
-    "/api/v1/bootstrap/code": {
-      "post": {
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "code",
-                    "expiresAt"
-                  ],
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "expiresAt": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/bootstrap/redeem": {
       "post": {
         "requestBody": {
@@ -174,8 +146,7 @@
                 "schema": {
                   "type": "object",
                   "required": [
-                    "user",
-                    "session"
+                    "user"
                   ],
                   "properties": {
                     "user": {
@@ -212,29 +183,6 @@
                           "type": "string"
                         }
                       }
-                    },
-                    "session": {
-                      "type": "object",
-                      "required": [
-                        "id",
-                        "userId",
-                        "createdAt",
-                        "expiresAt"
-                      ],
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "userId": {
-                          "type": "string"
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        },
-                        "expiresAt": {
-                          "type": "string"
-                        }
-                      }
                     }
                   }
                 }
@@ -244,168 +192,18 @@
         }
       }
     },
-    "/api/v1/auth/login": {
+    "/api/v1/users/{userId}/reset-code": {
       "post": {
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "email",
-                  "password"
-                ],
-                "properties": {
-                  "email": {
-                    "type": "string"
-                  },
-                  "password": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "userId",
+            "required": true
           }
-        },
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "user",
-                    "session"
-                  ],
-                  "properties": {
-                    "user": {
-                      "type": "object",
-                      "required": [
-                        "id",
-                        "email",
-                        "displayName",
-                        "isInstanceAdmin",
-                        "isInstanceOwner",
-                        "isSuspended",
-                        "createdAt"
-                      ],
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "email": {
-                          "type": "string"
-                        },
-                        "displayName": {
-                          "type": "string"
-                        },
-                        "isInstanceAdmin": {
-                          "type": "boolean"
-                        },
-                        "isInstanceOwner": {
-                          "type": "boolean"
-                        },
-                        "isSuspended": {
-                          "type": "boolean"
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        }
-                      }
-                    },
-                    "session": {
-                      "type": "object",
-                      "required": [
-                        "id",
-                        "userId",
-                        "createdAt",
-                        "expiresAt"
-                      ],
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "userId": {
-                          "type": "string"
-                        },
-                        "createdAt": {
-                          "type": "string"
-                        },
-                        "expiresAt": {
-                          "type": "string"
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/logout": {
-      "post": {
-        "responses": {
-          "204": {
-            "description": "Default Response"
-          }
-        }
-      }
-    },
-    "/api/v1/auth/password": {
-      "post": {
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "currentPassword",
-                  "newPassword"
-                ],
-                "properties": {
-                  "currentPassword": {
-                    "type": "string"
-                  },
-                  "newPassword": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "204": {
-            "description": "Default Response"
-          }
-        }
-      }
-    },
-    "/api/v1/auth/password/reset-code": {
-      "post": {
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "userId"
-                ],
-                "properties": {
-                  "userId": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
+        ],
         "responses": {
           "200": {
             "description": "Default Response",
@@ -432,7 +230,7 @@
         }
       }
     },
-    "/api/v1/auth/password/reset": {
+    "/api/auth/reset-with-code": {
       "post": {
         "requestBody": {
           "required": true,
@@ -498,6 +296,166 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/auth/sign-up/email": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "email",
+                  "name",
+                  "password"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "user",
+                    "projectId"
+                  ],
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "email",
+                        "displayName",
+                        "isInstanceAdmin",
+                        "isInstanceOwner",
+                        "isSuspended",
+                        "createdAt"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string"
+                        },
+                        "displayName": {
+                          "type": "string"
+                        },
+                        "isInstanceAdmin": {
+                          "type": "boolean"
+                        },
+                        "isInstanceOwner": {
+                          "type": "boolean"
+                        },
+                        "isSuspended": {
+                          "type": "boolean"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "projectId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/sign-in/email": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "rememberMe": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/auth/{*}": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "*",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "*",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
           }
         }
       }
@@ -3224,6 +3182,8 @@
                             "position",
                             "revision",
                             "resourceVersion",
+                            "reviewState",
+                            "sprintId",
                             "createdAt",
                             "deletedAt",
                             "category"
@@ -3300,6 +3260,44 @@
                             },
                             "resourceVersion": {
                               "type": "integer"
+                            },
+                            "reviewState": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "unreviewed"
+                                  ]
+                                },
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "requested"
+                                  ]
+                                },
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "approved"
+                                  ]
+                                },
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "rejected"
+                                  ]
+                                }
+                              ]
+                            },
+                            "sprintId": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
                             "createdAt": {
                               "type": "string"
@@ -3407,6 +3405,8 @@
                           "position",
                           "revision",
                           "resourceVersion",
+                          "reviewState",
+                          "sprintId",
                           "createdAt",
                           "deletedAt",
                           "category"
@@ -3483,6 +3483,44 @@
                           },
                           "resourceVersion": {
                             "type": "integer"
+                          },
+                          "reviewState": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "unreviewed"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "requested"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "approved"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "rejected"
+                                ]
+                              }
+                            ]
+                          },
+                          "sprintId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "createdAt": {
                             "type": "string"
@@ -3593,7 +3631,6 @@
                           "occurredAt",
                           "actorUserId",
                           "actorDisplayName",
-                          "actorAutomationId",
                           "type",
                           "targetType",
                           "targetId",
@@ -3617,16 +3654,6 @@
                           },
                           "actorDisplayName": {
                             "type": "string"
-                          },
-                          "actorAutomationId": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
                           },
                           "type": {
                             "type": "string"
@@ -3776,6 +3803,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -3855,6 +3884,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -4023,6 +4090,8 @@
                           "position",
                           "revision",
                           "resourceVersion",
+                          "reviewState",
+                          "sprintId",
                           "createdAt",
                           "deletedAt",
                           "category"
@@ -4099,6 +4168,44 @@
                           },
                           "resourceVersion": {
                             "type": "integer"
+                          },
+                          "reviewState": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "unreviewed"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "requested"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "approved"
+                                ]
+                              },
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "rejected"
+                                ]
+                              }
+                            ]
+                          },
+                          "sprintId": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "createdAt": {
                             "type": "string"
@@ -4208,6 +4315,8 @@
                         "position",
                         "revision",
                         "resourceVersion",
+                        "reviewState",
+                        "sprintId",
                         "createdAt",
                         "deletedAt",
                         "category",
@@ -4287,6 +4396,44 @@
                         },
                         "resourceVersion": {
                           "type": "integer"
+                        },
+                        "reviewState": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "unreviewed"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "enum": [
+                                "requested"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "enum": [
+                                "approved"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "enum": [
+                                "rejected"
+                              ]
+                            }
+                          ]
+                        },
+                        "sprintId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "createdAt": {
                           "type": "string"
@@ -4788,6 +4935,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -4867,6 +5016,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -4973,6 +5160,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -5052,6 +5241,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -5179,6 +5406,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -5258,6 +5487,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -5455,6 +5722,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -5534,6 +5803,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -5642,6 +5949,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -5721,6 +6030,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -6101,6 +6448,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -6180,6 +6529,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -6305,6 +6692,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -6384,6 +6773,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"
@@ -6484,6 +6911,8 @@
                     "position",
                     "revision",
                     "resourceVersion",
+                    "reviewState",
+                    "sprintId",
                     "createdAt",
                     "deletedAt",
                     "category",
@@ -6563,6 +6992,44 @@
                     },
                     "resourceVersion": {
                       "type": "integer"
+                    },
+                    "reviewState": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "unreviewed"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "requested"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "approved"
+                          ]
+                        },
+                        {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        }
+                      ]
+                    },
+                    "sprintId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "createdAt": {
                       "type": "string"

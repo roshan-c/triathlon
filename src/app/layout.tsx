@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Providers } from "@/components/providers";
-import { getToken } from "@/lib/auth-server";
 import "./globals.css";
 
 const geist = Geist({
@@ -20,8 +19,6 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const token = await getToken();
-
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -32,7 +29,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         />
       </head>
       <body className={`${geist.variable} ${geistMono.variable}`}>
-        <Providers initialToken={token ?? null}>{children}</Providers>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

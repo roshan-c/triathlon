@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useQuery } from "convex/react";
+import { useQuery } from "@/lib/api";
 import {
   Bar,
   BarChart,
@@ -15,12 +15,12 @@ import {
 } from "recharts";
 import { useAppContext } from "@/components/app-context";
 import { PageHeader, StatCard } from "@/components/ui";
-import { cvx } from "@/lib/convex";
+import { api } from "@/lib/api";
 
 export default function MetricsPage() {
   const { externalId, project } = useAppContext();
 
-  const sprints = useQuery(cvx.sprints.list, {
+  const sprints = useQuery(api.sprints.list, {
     projectId: project.projectId,
     externalId
   });
@@ -43,7 +43,7 @@ export default function MetricsPage() {
   }, [selectedSprintId, sprints]);
 
   const metrics = useQuery(
-    cvx.metrics.forSprint,
+    api.metrics.forSprint,
     selectedSprintId
       ? {
           projectId: project.projectId,
@@ -53,7 +53,7 @@ export default function MetricsPage() {
       : "skip"
   );
 
-  const velocityHistory = useQuery(cvx.metrics.velocityHistory, {
+  const velocityHistory = useQuery(api.metrics.velocityHistory, {
     projectId: project.projectId,
     externalId
   });

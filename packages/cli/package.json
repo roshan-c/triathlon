@@ -1,0 +1,19 @@
+{
+  "name": "@triathlon/cli",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": { "tri": "dist/index.js" },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@triathlon/client": "0.2.0",
+    "commander": "^14.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

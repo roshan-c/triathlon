@@ -3,44 +3,94 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { FastifyReply } from "fastify";
+import { fromNodeHeaders } from "better-auth/node";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
-import type { Session, User } from "../../domain/identity.js";
+import type { AuthModule } from "../../auth.js";
 import type { App } from "../app.js";
 import type { Config } from "../../config.js";
 import type { IdentityService } from "../../domain/identity.js";
 import type { RequestContext } from "../../domain/context.js";
 import { requireAuth } from "../types.js";
-import { SessionSchema, UserSchema } from "../schemas.js";
+import { UserSchema } from "../schemas.js";
 
 export interface AuthRoutesDeps {
   config: Config;
   identity: IdentityService;
+  auth: AuthModule;
+}
+
+function requestForBetterAuth(request: FastifyRequest, baseURL: string): Request {
+  const method = request.method.toUpperCase();
+  const init: RequestInit = {
+    method,
+    headers: fromNodeHeaders(request.headers),
+  };
+  if (method !== "GET" && method !== "HEAD" && request.body !== undefined) {
+    init.body = JSON.stringify(request.body);
+  }
+  return new Request(new URL(request.url, baseURL), init);
+}
+
+interface BetterAuthErrorBody {
+  message?: string;
+  detail?: string;
+  code?: string;
+}
+
+function forwardHeaders(response: Response, reply: FastifyReply): void {
+  for (const [name, value] of response.headers) {
+    if (name === "set-cookie" || name === "content-length" || name === "content-encoding") continue;
+    reply.header(name, value);
+  }
+  const cookies = response.headers.getSetCookie();
+  if (cookies.length > 0) reply.header("set-cookie", cookies);
+}
+
+async function forwardBetterAuth(
+  response: Response,
+  reply: FastifyReply,
+  requestId: string,
+): Promise<void> {
+  forwardHeaders(response, reply);
+  if (response.ok) {
+    reply.code(response.status).send(Buffer.from(await response.arrayBuffer()));
+    return;
+  }
+  const raw = await response.text();
+  let body: BetterAuthErrorBody = {};
+  try {
+    // SAFETY: Better Auth's documented error response is a JSON object; the
+    // fallback below handles adapters that return plain text.
+    body = JSON.parse(raw) as typeof body;
+  } catch {
+    // Better Auth adapters occasionally return plain text; retain a stable
+    // Problem envelope at the public Triathlon boundary.
+  }
+  const status = response.status;
+  const code = status === 401
+    ? "INVALID_CREDENTIALS"
+    : status === 429
+      ? "RATE_LIMITED"
+      : status >= 400 && status < 500
+        ? "VALIDATION_FAILED"
+        : "INTERNAL";
+  reply.code(status).send({
+    error: {
+      status,
+      code,
+      message: body.detail ?? body.message ?? (raw || "Authentication request failed"),
+      requestId,
+    },
+  });
 }
 
 export function registerAuthRoutes(
   app: App,
   deps: AuthRoutesDeps,
 ): void {
-  const { config, identity } = deps;
-  const cookieName = config.session.cookieName;
-
-  interface SessionResult {
-    user: User;
-    session: Session;
-    token: string;
-  }
-  const sendSession = (reply: FastifyReply, result: SessionResult): void => {
-    reply.setCookie(cookieName, result.token, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.session.secure,
-      expires: new Date(result.session.expiresAt),
-    });
-    const { token: _token, ...body } = result;
-    reply.send(body);
-  };
+  const { config, identity, auth } = deps;
+  const baseURL = config.baseUrl ?? `http://localhost:${config.port}`;
 
   // ---- health (unauthenticated) ----
   app.get(
@@ -87,21 +137,6 @@ export function registerAuthRoutes(
   );
 
   app.post(
-    "/api/v1/bootstrap/code",
-    {
-      schema: {
-        response: {
-          200: Type.Object({ code: Type.String(), expiresAt: Type.String() }),
-        },
-      },
-    },
-    async (request, reply) => {
-      const ctx: RequestContext = { actor: { userId: "bootstrap" }, requestId: request.id };
-      reply.send(await identity.issueBootstrapCode(ctx));
-    },
-  );
-
-  app.post(
     "/api/v1/bootstrap/redeem",
     {
       schema: {
@@ -112,83 +147,29 @@ export function registerAuthRoutes(
           password: Type.String(),
         }),
         response: {
-          200: Type.Object({ user: UserSchema, session: SessionSchema }),
+          200: Type.Object({ user: UserSchema }),
         },
       },
     },
     async (request, reply) => {
       const { code, email, displayName, password } = request.body;
       const ctx: RequestContext = { actor: { userId: "bootstrap" }, requestId: request.id };
-      const result = await identity.redeemBootstrap(ctx, { code, email, displayName, password });
-      const loggedIn = await identity.login(
-        { actor: { userId: result.id }, requestId: request.id },
-        email,
-        password,
-      );
-      sendSession(reply, loggedIn);
-    },
-  );
-
-  // ---- auth ----
-  app.post(
-    "/api/v1/auth/login",
-    {
-      schema: {
-        body: Type.Object({ email: Type.String(), password: Type.String() }),
-        response: {
-          200: Type.Object({ user: UserSchema, session: SessionSchema }),
-        },
-      },
-    },
-    async (request, reply) => {
-      const ctx: RequestContext = { actor: { userId: "anonymous" }, requestId: request.id };
-      const result = await identity.login(ctx, request.body.email, request.body.password);
-      sendSession(reply, result);
-    },
-  );
-
-  app.post(
-    "/api/v1/auth/logout",
-    {
-      schema: {
-        response: { 204: { type: "null" } as const },
-      },
-    },
-    async (request, reply) => {
-      const ctx = requireAuth(request);
-      const sessionId = request.auth?.sessionId;
-      if (sessionId) {
-        await identity.logout(ctx, sessionId);
+      const user = await identity.redeemBootstrap(ctx, { code, email, displayName, password });
+      const signIn = await auth.signIn(email, password, fromNodeHeaders(request.headers));
+      if (!signIn.ok) {
+        await forwardBetterAuth(signIn, reply, request.id);
+        return;
       }
-      reply.clearCookie(cookieName, { path: "/" });
-      reply.code(204).send();
+      forwardHeaders(signIn, reply);
+      reply.send({ user });
     },
   );
 
   app.post(
-    "/api/v1/auth/password",
+    "/api/v1/users/:userId/reset-code",
     {
       schema: {
-        body: Type.Object({
-          currentPassword: Type.String(),
-          newPassword: Type.String(),
-        }),
-        response: { 204: { type: "null" } as const },
-      },
-    },
-    async (request, reply) => {
-      const ctx = requireAuth(request);
-      await identity.changePassword(ctx, request.body.currentPassword, request.body.newPassword);
-      reply.clearCookie(cookieName, { path: "/" });
-      reply.code(204).send();
-    },
-  );
-
-  app.post(
-    "/api/v1/auth/password/reset-code",
-    {
-      schema: {
-        body: Type.Object({ userId: Type.String() }),
+        params: Type.Object({ userId: Type.String() }),
         response: {
           200: Type.Object({ code: Type.String(), expiresAt: Type.String() }),
         },
@@ -196,12 +177,12 @@ export function registerAuthRoutes(
     },
     async (request, reply) => {
       const ctx = requireAuth(request);
-      reply.send(await identity.createResetCode(ctx, request.body.userId));
+      reply.send(await identity.createResetCode(ctx, request.params.userId));
     },
   );
 
   app.post(
-    "/api/v1/auth/password/reset",
+    "/api/auth/reset-with-code",
     {
       schema: {
         body: Type.Object({ code: Type.String(), newPassword: Type.String() }),
@@ -215,6 +196,89 @@ export function registerAuthRoutes(
       );
     },
   );
+
+  app.post(
+    "/api/auth/sign-up/email",
+    {
+      schema: {
+        body: Type.Object({
+          code: Type.String(),
+          email: Type.String(),
+          name: Type.String(),
+          password: Type.String(),
+        }),
+        response: {
+          200: Type.Object({ user: UserSchema, projectId: Type.String() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { code, email, name, password } = request.body;
+      const result = await identity.registerWithInvitation(
+        { actor: { userId: "registration" }, requestId: request.id },
+        { code, email, displayName: name, password },
+      );
+      const signIn = await auth.signIn(email, password, fromNodeHeaders(request.headers));
+      if (!signIn.ok) {
+        await forwardBetterAuth(signIn, reply, request.id);
+        return;
+      }
+      forwardHeaders(signIn, reply);
+      reply.send(result);
+    },
+  );
+
+  // Own this exact Better Auth route so suspended domain users cannot create
+  // fresh sessions and login attempts retain Triathlon Audit semantics.
+  app.post(
+    "/api/auth/sign-in/email",
+    {
+      schema: {
+        body: Type.Object({
+          email: Type.String(),
+          password: Type.String(),
+          rememberMe: Type.Optional(Type.Boolean()),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const { email, password } = request.body;
+      await identity.authorizeSignIn(
+        { actor: { userId: "anonymous" }, requestId: request.id },
+        email,
+        password,
+      );
+      await forwardBetterAuth(
+        await auth.signIn(email, password, fromNodeHeaders(request.headers)),
+        reply,
+        request.id,
+      );
+    },
+  );
+
+  // Better Auth owns browser login, logout, password changes, and sessions.
+  app.route({
+    method: ["GET", "POST"],
+    url: "/api/auth/*",
+    async handler(request, reply) {
+      const session = await auth.getSession(fromNodeHeaders(request.headers));
+      const response = await auth.handle(requestForBetterAuth(request, baseURL));
+      const authOperation = request.url.endsWith("/sign-out")
+        ? "auth.logout"
+        : request.url.endsWith("/change-password")
+          ? "auth.password_change"
+          : null;
+      if (authOperation !== null) {
+        await identity.recordAuthEvent(
+          { actor: { userId: session?.userId ?? "anonymous", sessionFingerprint: session?.sessionId }, requestId: request.id },
+          authOperation,
+          response.ok ? "ok" : "error",
+          response.ok ? undefined : "Better Auth rejected the request",
+        );
+      }
+      await forwardBetterAuth(response, reply, request.id);
+    },
+  });
 
   // ---- instance administration ----
   app.get(

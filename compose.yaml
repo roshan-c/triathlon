@@ -1,0 +1,23 @@
+services:
+  triathlon:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    image: triathlon:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TRI_DATABASE_PATH: /data/triathlon.db
+      TRI_BACKUP_DIRECTORY: /backups
+      TRI_AUTH_SECRET: ${TRI_AUTH_SECRET:?set TRI_AUTH_SECRET to at least 32 random characters}
+      TRI_BASE_URL: ${TRI_BASE_URL:-http://localhost:8080}
+      TRI_TRUSTED_ORIGINS: ${TRI_TRUSTED_ORIGINS:-http://localhost:3000}
+      TRI_SESSION_SECURE: ${TRI_SESSION_SECURE:-false}
+    volumes:
+      - triathlon-data:/data
+      - triathlon-backups:/backups
+
+volumes:
+  triathlon-data:
+  triathlon-backups:

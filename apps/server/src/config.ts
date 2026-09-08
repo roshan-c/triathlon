@@ -36,6 +36,10 @@ export const ConfigSchema = Type.Object({
   timezone: Type.String({ default: "UTC" }),
   /** Origins allowed to send credentialed (cookie) requests. */
   trustedOrigins: Type.Array(Type.String(), { default: [] }),
+  auth: Type.Object({
+    /** High-entropy Better Auth signing secret (minimum 32 characters). */
+    secret: Type.String({ minLength: 32, default: "replace-with-a-random-32-byte-secret" }),
+  }),
   session: Type.Object({
     cookieName: Type.String({ default: "tri_session" }),
     /** Browser session lifetime in days. */
@@ -56,6 +60,12 @@ export const ConfigSchema = Type.Object({
   }),
   maintenance: Type.Object({
     intervalMinutes: Type.Integer({ minimum: 1, default: 60 }),
+  }),
+  backups: Type.Object({
+    directory: Type.String({ default: "./backups" }),
+    enabled: Type.Boolean({ default: true }),
+    dailyRetention: Type.Integer({ minimum: 1, default: 7 }),
+    weeklyRetention: Type.Integer({ minimum: 1, default: 4 }),
   }),
   docs: Type.Object({
     /** Serve the interactive OpenAPI UI. */
@@ -78,6 +88,7 @@ const InputSchema = Type.Partial(
     logLevel: Type.String(),
     timezone: Type.String(),
     trustedOrigins: Type.Array(Type.String()),
+    auth: Type.Partial(Type.Object({ secret: Type.String() })),
     session: Type.Partial(
       Type.Object({ cookieName: Type.String(), ttlDays: Type.Integer(), secure: Type.Boolean() }),
     ),
@@ -85,6 +96,12 @@ const InputSchema = Type.Partial(
     invitations: Type.Partial(Type.Object({ defaultTtlDays: Type.Integer() })),
     instanceWideKeys: Type.Partial(Type.Object({ maxTtlDays: Type.Integer() })),
     maintenance: Type.Partial(Type.Object({ intervalMinutes: Type.Integer() })),
+    backups: Type.Partial(Type.Object({
+      directory: Type.String(),
+      enabled: Type.Boolean(),
+      dailyRetention: Type.Integer(),
+      weeklyRetention: Type.Integer(),
+    })),
     docs: Type.Partial(Type.Object({ enabled: Type.Boolean() })),
   }),
 );
@@ -99,6 +116,7 @@ const ENV_MAP = {
   TRI_LOG_LEVEL: "logLevel",
   TRI_TIMEZONE: "timezone",
   TRI_TRUSTED_ORIGINS: "trustedOrigins",
+  TRI_AUTH_SECRET: "auth.secret",
   TRI_SESSION_COOKIE_NAME: "session.cookieName",
   TRI_SESSION_TTL_DAYS: "session.ttlDays",
   TRI_SESSION_SECURE: "session.secure",
@@ -106,6 +124,10 @@ const ENV_MAP = {
   TRI_INVITATIONS_DEFAULT_TTL_DAYS: "invitations.defaultTtlDays",
   TRI_INSTANCE_WIDE_KEY_MAX_TTL_DAYS: "instanceWideKeys.maxTtlDays",
   TRI_MAINTENANCE_INTERVAL_MINUTES: "maintenance.intervalMinutes",
+  TRI_BACKUP_DIRECTORY: "backups.directory",
+  TRI_BACKUPS_ENABLED: "backups.enabled",
+  TRI_BACKUP_DAILY_RETENTION: "backups.dailyRetention",
+  TRI_BACKUP_WEEKLY_RETENTION: "backups.weeklyRetention",
   TRI_DOCS_ENABLED: "docs.enabled",
 } as const satisfies Record<string, string>;
 
@@ -149,41 +171,45 @@ function setNested(input: Input, dotted: string, raw: string): void {
     }
     return;
   }
-  // SAFETY: keyName comes from ENV_MAP entries, which only reference known top-level settings.
-  const group = input[keyName as keyof Input];
-  if (group === undefined) return;
   switch (`${keyName}.${leafName}`) {
     case "session.cookieName":
-      // SAFETY: only reachable when group is the session object (keyName gate).
-      (group as NonNullable<typeof input.session>).cookieName = raw;
+      (input.session ??= {}).cookieName = raw;
+      break;
+    case "auth.secret":
+      (input.auth ??= {}).secret = raw;
       break;
     case "session.ttlDays":
-      // SAFETY: only reachable when group is the session object (keyName gate).
-      (group as NonNullable<typeof input.session>).ttlDays = intFromEnv("TRI_SESSION_TTL_DAYS", raw);
+      (input.session ??= {}).ttlDays = intFromEnv("TRI_SESSION_TTL_DAYS", raw);
       break;
     case "session.secure":
-      // SAFETY: only reachable when group is the session object (keyName gate).
-      (group as NonNullable<typeof input.session>).secure = raw === "true";
+      (input.session ??= {}).secure = raw === "true";
       break;
     case "bootstrap.codeTtlMinutes":
-      // SAFETY: only reachable when group is the bootstrap object (keyName gate).
-      (group as NonNullable<typeof input.bootstrap>).codeTtlMinutes = intFromEnv("TRI_BOOTSTRAP_CODE_TTL_MINUTES", raw);
+      (input.bootstrap ??= {}).codeTtlMinutes = intFromEnv("TRI_BOOTSTRAP_CODE_TTL_MINUTES", raw);
       break;
     case "invitations.defaultTtlDays":
-      // SAFETY: only reachable when group is the invitations object (keyName gate).
-      (group as NonNullable<typeof input.invitations>).defaultTtlDays = intFromEnv("TRI_INVITATIONS_DEFAULT_TTL_DAYS", raw);
+      (input.invitations ??= {}).defaultTtlDays = intFromEnv("TRI_INVITATIONS_DEFAULT_TTL_DAYS", raw);
       break;
     case "instanceWideKeys.maxTtlDays":
-      // SAFETY: only reachable when group is the instanceWideKeys object (keyName gate).
-      (group as NonNullable<typeof input.instanceWideKeys>).maxTtlDays = intFromEnv("TRI_INSTANCE_WIDE_KEY_MAX_TTL_DAYS", raw);
+      (input.instanceWideKeys ??= {}).maxTtlDays = intFromEnv("TRI_INSTANCE_WIDE_KEY_MAX_TTL_DAYS", raw);
       break;
     case "maintenance.intervalMinutes":
-      // SAFETY: only reachable when group is the maintenance object (keyName gate).
-      (group as NonNullable<typeof input.maintenance>).intervalMinutes = intFromEnv("TRI_MAINTENANCE_INTERVAL_MINUTES", raw);
+      (input.maintenance ??= {}).intervalMinutes = intFromEnv("TRI_MAINTENANCE_INTERVAL_MINUTES", raw);
+      break;
+    case "backups.directory":
+      (input.backups ??= {}).directory = raw;
+      break;
+    case "backups.enabled":
+      (input.backups ??= {}).enabled = raw === "true";
+      break;
+    case "backups.dailyRetention":
+      (input.backups ??= {}).dailyRetention = intFromEnv("TRI_BACKUP_DAILY_RETENTION", raw);
+      break;
+    case "backups.weeklyRetention":
+      (input.backups ??= {}).weeklyRetention = intFromEnv("TRI_BACKUP_WEEKLY_RETENTION", raw);
       break;
     case "docs.enabled":
-      // SAFETY: only reachable when group is the docs object (keyName gate).
-      (group as NonNullable<typeof input.docs>).enabled = raw === "true";
+      (input.docs ??= {}).enabled = raw === "true";
       break;
     default:
       break;
@@ -218,6 +244,7 @@ function mergeInputs(base: Config, ...layers: Input[]): Config {
     }
     if (layer.timezone !== undefined) merged.timezone = layer.timezone;
     if (layer.trustedOrigins !== undefined) merged.trustedOrigins = layer.trustedOrigins;
+    if (layer.auth !== undefined) merged.auth = { ...merged.auth, ...layer.auth };
     if (layer.session !== undefined) merged.session = { ...merged.session, ...layer.session };
     if (layer.bootstrap !== undefined) merged.bootstrap = { ...merged.bootstrap, ...layer.bootstrap };
     if (layer.invitations !== undefined) merged.invitations = { ...merged.invitations, ...layer.invitations };
@@ -225,6 +252,7 @@ function mergeInputs(base: Config, ...layers: Input[]): Config {
       merged.instanceWideKeys = { ...merged.instanceWideKeys, ...layer.instanceWideKeys };
     }
     if (layer.maintenance !== undefined) merged.maintenance = { ...merged.maintenance, ...layer.maintenance };
+    if (layer.backups !== undefined) merged.backups = { ...merged.backups, ...layer.backups };
     if (layer.docs !== undefined) merged.docs = { ...merged.docs, ...layer.docs };
   }
   return merged;
@@ -293,11 +321,13 @@ export function describeConfig(cfg: Config): Config {
     logLevel: cfg.logLevel,
     timezone: cfg.timezone,
     trustedOrigins: cfg.trustedOrigins,
+    auth: { secret: "[redacted]" },
     session: { ...cfg.session },
     bootstrap: { ...cfg.bootstrap },
     invitations: { ...cfg.invitations },
     instanceWideKeys: { ...cfg.instanceWideKeys },
     maintenance: { ...cfg.maintenance },
+    backups: { ...cfg.backups },
     docs: { ...cfg.docs },
   };
 }

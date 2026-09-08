@@ -1,21 +1,21 @@
 "use client";
 
 import { IconArrowRight, IconChartLine, IconFlag, IconLayoutKanban } from "@tabler/icons-react";
-import { useQuery } from "convex/react";
+import { useQuery } from "@/lib/api";
 import Link from "next/link";
 import { useAppContext } from "@/components/app-context";
 import { StatCard } from "@/components/ui";
-import { cvx } from "@/lib/convex";
+import { api } from "@/lib/api";
 
 export default function DashboardPage() {
   const { externalId, project, session } = useAppContext();
 
-  const board = useQuery(cvx.tickets.board, {
+  const board = useQuery(api.tickets.board, {
     projectId: project.projectId,
     externalId
   });
 
-  const sprints = useQuery(cvx.sprints.list, {
+  const sprints = useQuery(api.sprints.list, {
     projectId: project.projectId,
     externalId
   });

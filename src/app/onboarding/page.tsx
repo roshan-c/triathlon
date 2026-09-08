@@ -1,10 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
-import { cvx } from "@/lib/convex";
+import { api } from "@/lib/api";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -12,7 +12,7 @@ export default function OnboardingPage() {
   const externalId = session?.user?.id;
 
   const projects = useQuery(
-    cvx.projects.listMine,
+    api.projects.listMine,
     externalId
       ? {
           externalId
@@ -21,7 +21,7 @@ export default function OnboardingPage() {
   );
 
   const createAccess = useQuery(
-    cvx.projects.canCreate,
+    api.projects.canCreate,
     externalId
       ? {
           externalId
@@ -29,8 +29,8 @@ export default function OnboardingPage() {
       : "skip"
   );
 
-  const createProject = useMutation(cvx.projects.create);
-  const syncProfile = useMutation(cvx.users.syncProfile);
+  const createProject = useMutation(api.projects.create);
+  const syncProfile = useMutation(api.users.syncProfile);
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");

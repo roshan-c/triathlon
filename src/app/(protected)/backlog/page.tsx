@@ -1,25 +1,25 @@
 "use client";
 
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "@/lib/api";
 import { PriorityBadge } from "@/components/priority-badge";
 import { useAppContext } from "@/components/app-context";
 import { EmptyState, PageHeader } from "@/components/ui";
-import { cvx } from "@/lib/convex";
+import { api } from "@/lib/api";
 
 export default function BacklogPage() {
   const { externalId, project } = useAppContext();
 
-  const board = useQuery(cvx.tickets.board, {
+  const board = useQuery(api.tickets.board, {
     projectId: project.projectId,
     externalId
   });
 
-  const sprints = useQuery(cvx.sprints.list, {
+  const sprints = useQuery(api.sprints.list, {
     projectId: project.projectId,
     externalId
   });
 
-  const attachTicketToSprint = useMutation(cvx.tickets.attachToSprint);
+  const attachTicketToSprint = useMutation(api.tickets.attachToSprint);
 
   const backlog = board?.columns.find((column: any) => column.name === "Backlog");
 

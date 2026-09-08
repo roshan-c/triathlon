@@ -12,7 +12,7 @@
  * transaction; do not call those from HTTP.
  */
 
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { Database as DbSchema } from "../db/types.js";
 import type { Db } from "../db/types.js";
 import type { ColumnCategory } from "../db/types.js";
@@ -22,7 +22,7 @@ import type { Ids } from "../ids.js";
 import type { RequestContext } from "./context.js";
 import { CODE_PATTERN, hashSecret, identityMutations } from "./identity.js";
 import type { WorkMutations } from "./work.js";
-import { runCommand } from "./tx.js";
+import { asDomainTransaction, runCommand, type DomainTransaction, unwrapDomainTransaction } from "./tx.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,11 +78,11 @@ export interface RecategorizeInput {
  * call from any module.
  */
 export interface ProjectsSeam {
-  roleFor(userId: string, projectId: string, trx?: Kysely<DbSchema>): Promise<ProjectRole>;
-  getProject(projectId: string, trx?: Kysely<DbSchema>): Promise<Project | null>;
-  columnsFor(projectId: string, trx?: Kysely<DbSchema>): Promise<Column[]>;
-  doneColumn(projectId: string, trx?: Kysely<DbSchema>): Promise<Column | null>;
-  timezoneFor(projectId: string, trx?: Kysely<DbSchema>): Promise<string | null>;
+  roleFor(userId: string, projectId: string, trx?: DomainTransaction): Promise<ProjectRole>;
+  getProject(projectId: string, trx?: DomainTransaction): Promise<Project | null>;
+  columnsFor(projectId: string, trx?: DomainTransaction): Promise<Column[]>;
+  doneColumn(projectId: string, trx?: DomainTransaction): Promise<Column | null>;
+  timezoneFor(projectId: string, trx?: DomainTransaction): Promise<string | null>;
 }
 
 export interface ProjectsService extends ProjectsSeam {
@@ -131,6 +131,41 @@ export interface ProjectsService extends ProjectsSeam {
   ): Promise<void>;
 }
 
+/** Transaction-scoped membership operation injected into Identity onboarding. */
+export interface ProjectMembershipMutations {
+  addInvitedMember(
+    trx: DomainTransaction,
+    projectId: string,
+    userId: string,
+    addedBy: string,
+    addedAt: string,
+  ): Promise<void>;
+}
+
+export const projectMembershipMutations: ProjectMembershipMutations = {
+  addInvitedMember: async (trx, projectId, userId, addedBy, addedAt) => {
+    await unwrapDomainTransaction(trx)
+      .insertInto("project_members")
+      .values({
+        project_id: projectId,
+        user_id: userId,
+        added_at: addedAt,
+        added_by: addedBy,
+        removed_at: null,
+        removed_by: null,
+      })
+      .onConflict((oc) =>
+        oc.columns(["project_id", "user_id"]).doUpdateSet({
+          added_at: addedAt,
+          added_by: addedBy,
+          removed_at: null,
+          removed_by: null,
+        }),
+      )
+      .execute();
+  },
+};
+
 export interface ProjectsDeps {
   db: Db;
   clock: Clock;
@@ -162,7 +197,7 @@ export async function requireOpenProject(
   projects: ProjectsSeam,
   ctx: RequestContext,
   projectId: string,
-  trx?: Kysely<DbSchema>,
+  trx?: DomainTransaction,
 ): Promise<void> {
   const project = await projects.getProject(projectId, trx);
   if (!project || project.deletedAt !== null) {
@@ -194,6 +229,9 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
   const { db, clock, ids } = deps;
   const nowIso = (): string => clock.now().toISOString();
 
+  const executor = (trx?: DomainTransaction): Kysely<DbSchema> =>
+    trx === undefined ? db : unwrapDomainTransaction(trx);
+
   async function meta(trx?: Kysely<DbSchema>): Promise<{ ownerUserId: string | null; timezone: string }> {
     const row = await (trx ?? db)
       .selectFrom("instance_meta")
@@ -204,6 +242,9 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
   }
 
   async function instanceAdmin(ctx: RequestContext, trx?: Kysely<DbSchema>): Promise<void> {
+    if (ctx.actor.keyScope !== undefined && ctx.actor.keyScope !== "session") {
+      throw domainError("FORBIDDEN", "Instance administration requires a browser session");
+    }
     const row = await (trx ?? db)
       .selectFrom("users")
       .select("is_instance_admin")
@@ -214,12 +255,13 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
     }
   }
 
-  /** Administration (owner) powers never flow through access keys. */
+  /** Instance-wide keys never grant project administration. Project-scoped
+   * keys inherit their owner's permissions within their own project. */
   function requireSession(ctx: RequestContext): void {
-    if (ctx.actor.keyScope !== "session" && ctx.actor.keyScope !== undefined) {
+    if (ctx.actor.keyScope === "instance") {
       throw domainError(
         "FORBIDDEN",
-        "Project administration requires a browser session",
+        "Instance-wide keys grant member-level access only",
       );
     }
   }
@@ -227,9 +269,9 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
   async function roleFor(
     userId: string,
     projectId: string,
-    trx?: Kysely<DbSchema>,
+    domainTrx?: DomainTransaction,
   ): Promise<ProjectRole> {
-    const q = trx ?? db;
+    const q = executor(domainTrx);
     const project = await q
       .selectFrom("projects")
       .select("id")
@@ -256,7 +298,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
     ctx: RequestContext,
     projectId: string,
     role: ProjectRole,
-    trx?: Kysely<DbSchema>,
+    trx?: Transaction<DbSchema>,
   ): Promise<void> {
     // Instance-wide keys grant ordinary member-level work access to every
     // project; they never grant project administration.
@@ -269,14 +311,12 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
     }
     if (ctx.actor.keyScope === "project") {
       assertKeyScopeFits(ctx, projectId);
-      if (role === "owner") {
-        throw domainError(
-          "FORBIDDEN",
-          "Access keys grant member-level access only; project administration requires a session",
-        );
-      }
     }
-    const actual = await roleFor(ctx.actor.userId, projectId, trx);
+    const actual = await roleFor(
+      ctx.actor.userId,
+      projectId,
+      trx ? asDomainTransaction(trx) : undefined,
+    );
     if (role === "member" && actual !== "none") return;
     if (actual !== role) {
       if (role === "owner") {
@@ -352,7 +392,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
   const service: ProjectsService = {
     roleFor,
     getProject: async (projectId, trx) => {
-      const row = await (trx ?? db)
+      const row = await executor(trx)
         .selectFrom("projects")
         .selectAll()
         .where("id", "=", projectId)
@@ -360,7 +400,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
       return row ? toProject(row) : null;
     },
     columnsFor: async (projectId, trx) => {
-      const rows = await (trx ?? db)
+      const rows = await executor(trx)
         .selectFrom("columns")
         .selectAll()
         .where("project_id", "=", projectId)
@@ -377,7 +417,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
       }));
     },
     doneColumn: async (projectId, trx) => {
-      const row = await (trx ?? db)
+      const row = await executor(trx)
         .selectFrom("columns")
         .selectAll()
         .where("project_id", "=", projectId)
@@ -396,7 +436,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
         : null;
     },
     timezoneFor: async (projectId, trx) => {
-      const row = await (trx ?? db)
+      const row = await executor(trx)
         .selectFrom("projects")
         .select("timezone")
         .where("id", "=", projectId)
@@ -415,7 +455,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           activityType: "project.created",
           projectId: undefined,
         },
-        run: async (trx) => {
+        run: async (trx, _spec) => {
           await instanceAdmin(ctx, trx);
           requireSession(ctx);
           const name = validateProjectName(input.name);
@@ -538,10 +578,16 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const trimmed = validateProjectName(name);
+          const before = await trx
+            .selectFrom("projects")
+            .select(["name"])
+            .where("id", "=", projectId)
+            .where("deleted_at", "is", null)
+            .executeTakeFirstOrThrow();
           await trx
             .updateTable("projects")
             .set({ name: trimmed })
@@ -553,6 +599,12 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .selectAll()
             .where("id", "=", projectId)
             .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            name: trimmed,
+            before: { name: before.name },
+            after: { name: trimmed },
+          };
           return toProject(row);
         },
       }),
@@ -571,10 +623,16 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const tz = validateTimezone(timezone);
+          const before = await trx
+            .selectFrom("projects")
+            .select(["timezone"])
+            .where("id", "=", projectId)
+            .where("deleted_at", "is", null)
+            .executeTakeFirstOrThrow();
           await trx
             .updateTable("projects")
             .set({ timezone: tz })
@@ -586,6 +644,12 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .selectAll()
             .where("id", "=", projectId)
             .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            timezone: tz,
+            before: { timezone: before.timezone },
+            after: { timezone: tz },
+          };
           return toProject(row);
         },
       }),
@@ -604,9 +668,15 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
+          const before = await trx
+            .selectFrom("projects")
+            .select(["owner_user_id"])
+            .where("id", "=", projectId)
+            .where("deleted_at", "is", null)
+            .executeTakeFirstOrThrow();
           if (toUserId === ctx.actor.userId) {
             throw domainError("INVALID_STATE", "Ownership already held by this user");
           }
@@ -655,6 +725,12 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .selectAll()
             .where("id", "=", projectId)
             .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            toUserId,
+            before: { ownerUserId: before.owner_user_id },
+            after: { ownerUserId: toUserId },
+          };
           return toProject(row);
         },
       }),
@@ -673,9 +749,14 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await instanceAdmin(ctx, trx);
           requireSession(ctx);
+          const before = await trx
+            .selectFrom("projects")
+            .select(["owner_user_id"])
+            .where("id", "=", projectId)
+            .executeTakeFirstOrThrow();
           const target = await trx
             .selectFrom("project_members")
             .select("user_id")
@@ -694,13 +775,18 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .set({ owner_user_id: toUserId })
             .where("id", "=", projectId)
             .execute();
-          return toProject(
-            await trx
+          const row = await trx
               .selectFrom("projects")
               .selectAll()
               .where("id", "=", projectId)
-              .executeTakeFirstOrThrow(),
-          );
+              .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            toUserId,
+            before: { ownerUserId: before.owner_user_id },
+            after: { ownerUserId: toUserId },
+          };
+          return toProject(row);
         },
       }),
 
@@ -718,9 +804,15 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
+          const before = await trx
+            .selectFrom("projects")
+            .select(["deleted_at"])
+            .where("id", "=", projectId)
+            .where("deleted_at", "is", null)
+            .executeTakeFirstOrThrow();
           const deletedAt = nowIso();
           await trx
             .updateTable("projects")
@@ -735,13 +827,17 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("project_id", "=", projectId)
             .where("revoked_at", "is", null)
             .execute();
-          return toProject(
-            await trx
+          const row = await trx
               .selectFrom("projects")
               .selectAll()
               .where("id", "=", projectId)
-              .executeTakeFirstOrThrow(),
-          );
+              .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            before: { deletedAt: before.deleted_at },
+            after: { deletedAt },
+          };
+          return toProject(row);
         },
       }),
 
@@ -759,22 +855,32 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
+          const before = await trx
+            .selectFrom("projects")
+            .select(["deleted_at"])
+            .where("id", "=", projectId)
+            .where("deleted_at", "is not", null)
+            .executeTakeFirstOrThrow();
           await trx
             .updateTable("projects")
             .set({ deleted_at: null })
             .where("id", "=", projectId)
             .where("deleted_at", "is not", null)
             .execute();
-          return toProject(
-            await trx
+          const row = await trx
               .selectFrom("projects")
               .selectAll()
               .where("id", "=", projectId)
-              .executeTakeFirstOrThrow(),
-          );
+              .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            before: { deletedAt: before.deleted_at },
+            after: { deletedAt: null },
+          };
+          return toProject(row);
         },
       }),
 
@@ -789,7 +895,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, _spec) => {
           await instanceAdmin(ctx, trx);
           requireSession(ctx);
           const row = await trx
@@ -823,7 +929,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           projectId: undefined,
           detail: "invitation-redemption",
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           const trimmed = invitationCode.trim();
           if (!CODE_PATTERN.test(trimmed)) {
             throw domainError("INVALID_CODE", "Unknown, expired, or revoked invitation");
@@ -856,6 +962,12 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("user_id", "=", ctx.actor.userId)
             .executeTakeFirst();
           if (member && member.removed_at === null) {
+            spec.activityPayload = {
+              projectId,
+              userId: ctx.actor.userId,
+              before: { role: project.owner_user_id === ctx.actor.userId ? "owner" : "member" },
+              after: { role: project.owner_user_id === ctx.actor.userId ? "owner" : "member" },
+            };
             return {
               projectId,
               member: {
@@ -876,6 +988,13 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
               removed_by: null,
             })
             .execute();
+          spec.projectId = projectId;
+          spec.activityPayload = {
+            projectId,
+            userId: ctx.actor.userId,
+            before: null,
+            after: { role: project.owner_user_id === ctx.actor.userId ? "owner" : "member" },
+          };
           return {
             projectId,
             member: {
@@ -926,7 +1045,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "user",
           targetId: userId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const project = await trx
@@ -951,6 +1070,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("removed_at", "is", null)
             .executeTakeFirst();
           if (!member) throw domainError("NOT_FOUND", "Member not found");
+          const before = { role: "member" as const };
           const removedAt = nowIso();
           await trx
             .updateTable("project_members")
@@ -960,9 +1080,10 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("removed_at", "is", null)
             .execute();
           // Atomically unassign the member's Open tickets.
-          await deps.work.unassignOpenTickets(trx, projectId, userId, removedAt);
+          await deps.work.unassignOpenTickets(asDomainTransaction(trx), projectId, userId, removedAt);
           // Disable their project-scoped access.
-          await identityMutations.revokeProjectKeys(trx, projectId, userId, removedAt);
+          await identityMutations.revokeProjectKeys(asDomainTransaction(trx), projectId, userId, removedAt);
+          spec.activityPayload = { projectId, userId, before, after: null };
         },
       }),
 
@@ -979,7 +1100,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           activityPayload: { projectId, name: input.name.trim(), category: input.category ?? "not_started" },
           targetType: "column",
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const name = validateProjectName(input.name);
@@ -1038,6 +1159,13 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .selectAll()
             .where("id", "=", columnId)
             .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            name: row.name,
+            category: row.category,
+            before: null,
+            after: { id: row.id, name: row.name, category: row.category, position: row.position },
+          };
           return {
             id: row.id,
             projectId: row.project_id,
@@ -1064,10 +1192,16 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "column",
           targetId: columnId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const trimmed = validateProjectName(name);
+          const before = await trx
+            .selectFrom("columns")
+            .select(["name"])
+            .where("id", "=", columnId)
+            .where("project_id", "=", projectId)
+            .executeTakeFirstOrThrow();
           await trx
             .updateTable("columns")
             .set({ name: trimmed })
@@ -1079,6 +1213,13 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .selectAll()
             .where("id", "=", columnId)
             .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            columnId,
+            name: trimmed,
+            before: { name: before.name },
+            after: { name: trimmed },
+          };
           return {
             id: row.id,
             projectId: row.project_id,
@@ -1105,7 +1246,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "column",
           targetId: columnId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const column = await trx
@@ -1115,6 +1256,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("project_id", "=", projectId)
             .executeTakeFirst();
           if (!column) throw domainError("NOT_FOUND", "Column not found");
+          const beforeCategory = column.category;
           const category = input.category;
           if (
             !["not_started", "started", "done"].includes(category)
@@ -1191,6 +1333,14 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .selectAll()
             .where("id", "=", columnId)
             .executeTakeFirstOrThrow();
+          spec.activityPayload = {
+            projectId,
+            columnId,
+            category: input.category,
+            affectedTickets,
+            before: { category: beforeCategory },
+            after: { category: row.category, affectedTickets },
+          };
           return {
             column: {
               id: row.id,
@@ -1220,7 +1370,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "project",
           targetId: projectId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const rows = await trx
@@ -1254,6 +1404,12 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("project_id", "=", projectId)
             .orderBy("position")
             .execute();
+          spec.activityPayload = {
+            projectId,
+            columnIds,
+            before: { columnIds: rows.map((row) => row.id) },
+            after: { columnIds },
+          };
           return updated.map((r) => ({
             id: r.id,
             projectId: r.project_id,
@@ -1280,7 +1436,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
           targetType: "column",
           targetId: columnId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireRole(ctx, projectId, "owner", trx);
           requireSession(ctx);
           const column = await trx
@@ -1290,6 +1446,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .where("project_id", "=", projectId)
             .executeTakeFirst();
           if (!column) throw domainError("NOT_FOUND", "Column not found");
+          const before = { id: column.id, name: column.name, category: column.category, position: column.position };
           if (column.category === "done") {
             throw domainError(
               "INVALID_STATE",
@@ -1324,7 +1481,7 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
               );
             }
             await deps.work.moveColumnTickets(
-              trx,
+              asDomainTransaction(trx),
               projectId,
               columnId,
               destinationColumnId,
@@ -1334,6 +1491,13 @@ export function createProjectsService(deps: ProjectsDeps): ProjectsService {
             .deleteFrom("columns")
             .where("id", "=", columnId)
             .execute();
+          spec.activityPayload = {
+            projectId,
+            columnId,
+            destinationColumnId: destinationColumnId ?? null,
+            before,
+            after: null,
+          };
         },
       }),
   };

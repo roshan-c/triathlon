@@ -236,6 +236,23 @@ export interface IdempotencyTable {
   created_at: string;
 }
 
+export interface RateLimitsTable {
+  key: string;
+  attempts: number;
+  reset_at: string;
+}
+
+export interface AuthSessionsTable {
+  id: string;
+  expiresAt: number;
+  token: string;
+  createdAt: number;
+  updatedAt: number;
+  ipAddress: string | null;
+  userAgent: string | null;
+  userId: string;
+}
+
 export interface Database {
   users: UsersTable;
   instance_meta: InstanceMetaTable;
@@ -258,6 +275,8 @@ export interface Database {
   sprint_members: SprintMembersTable;
   sprint_snapshots: SprintSnapshotsTable;
   idempotency: IdempotencyTable;
+  rate_limits: RateLimitsTable;
+  auth_sessions: AuthSessionsTable;
 }
 
 export type Db = Kysely<Database>;

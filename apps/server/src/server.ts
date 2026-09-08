@@ -5,13 +5,18 @@
  */
 
 import type { Config } from "./config.js";
+import { createAuthModule, type AuthModule } from "./auth.js";
 import { openSqlite, type SqliteDb } from "./db/client.js";
 import { assertSchemaCompatible, migrateToLatest } from "./db/migrate.js";
 import { systemClock, type Clock } from "./time.js";
 import { realIds, type Ids } from "./ids.js";
 import { ProjectEventBus } from "./domain/events.js";
 import { createIdentityService, type IdentityService } from "./domain/identity.js";
-import { createProjectsService, type ProjectsService } from "./domain/projects.js";
+import {
+  createProjectsService,
+  projectMembershipMutations,
+  type ProjectsService,
+} from "./domain/projects.js";
 import { createWorkService, type WorkService } from "./domain/work.js";
 import { workMutations } from "./domain/work.js";
 import { createPlanningService, type PlanningService } from "./domain/planning.js";
@@ -25,6 +30,7 @@ export interface Server {
   clock: Clock;
   ids: Ids;
   bus: ProjectEventBus;
+  auth: AuthModule;
   identity: IdentityService;
   projects: ProjectsService;
   work: WorkService;
@@ -37,6 +43,8 @@ export interface CreateServerOptions {
   config: Config;
   clock?: Clock;
   ids?: Ids;
+  /** Reuse an already-open database (CLI startup and tests). */
+  sqlite?: SqliteDb;
 }
 
 /**
@@ -49,9 +57,10 @@ export async function createServer(opts: CreateServerOptions): Promise<Server> {
   const clock = opts.clock ?? systemClock;
   const ids = opts.ids ?? realIds;
 
-  const sqlite = openSqlite(config.databasePath);
+  const sqlite = opts.sqlite ?? openSqlite(config.databasePath);
   const { db } = sqlite;
   const bus = new ProjectEventBus();
+  const auth = createAuthModule({ database: sqlite.driver, config, ids });
 
   // The instance default timezone follows configuration; projects inherit it.
   void db
@@ -68,9 +77,11 @@ export async function createServer(opts: CreateServerOptions): Promise<Server> {
   });
   const identity = createIdentityService({
     db,
+    auth,
     clock,
     ids,
     projects,
+    membership: projectMembershipMutations,
     invitationDefaultTtlDays: config.invitations.defaultTtlDays,
     instanceKeyMaxTtlDays: config.instanceWideKeys.maxTtlDays,
     sessionTtlDays: config.session.ttlDays,
@@ -81,7 +92,6 @@ export async function createServer(opts: CreateServerOptions): Promise<Server> {
 
   const app = await buildApp({
     config,
-    db,
     clock,
     ids,
     serverVersion: SERVER_VERSION,
@@ -90,6 +100,7 @@ export async function createServer(opts: CreateServerOptions): Promise<Server> {
     work,
     planning,
     bus,
+    auth,
   });
 
   return {
@@ -98,6 +109,7 @@ export async function createServer(opts: CreateServerOptions): Promise<Server> {
     clock,
     ids,
     bus,
+    auth,
     identity,
     projects,
     work,

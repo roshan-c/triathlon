@@ -6,6 +6,8 @@
 
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { fromNodeHeaders } from "better-auth/node";
+import type { AuthModule } from "../auth.js";
 import type { Actor, KeyScope } from "../domain/context.js";
 import { inputHash } from "../domain/tx.js";
 import type { IdentityService } from "../domain/identity.js";
@@ -18,6 +20,7 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export interface AuthHookDeps {
   config: Config;
   identity: IdentityService;
+  auth: AuthModule;
 }
 
 function clientHeaderValue(header: string | string[] | undefined): string | undefined {
@@ -53,11 +56,32 @@ function idempotencyFromRequest(
 export function registerAuthHook(app: {
   addHook(hook: string, fn: (request: FastifyRequest, reply: FastifyReply) => Promise<void>): void;
 }, deps: AuthHookDeps): void {
-  const { config, identity } = deps;
+  const { config, identity, auth: authModule } = deps;
   const cookieName = config.session.cookieName;
 
   app.addHook("preHandler", async (request, reply) => {
     const url = request.url;
+    const clientHeader = clientHeaderValue(request.headers["x-triathlon-client"]);
+    const source = createHash("sha256")
+      .update(request.ip || request.socket.remoteAddress || "unknown")
+      .digest("hex");
+    const enforceLimit = async (bucket: string, limit: number): Promise<void> => {
+      if (!await identity.consumeRateLimit(`${bucket}:${source}`, limit, 60)) {
+        await identity.recordAuthEvent(
+          { actor: { userId: "unknown" }, requestId: request.id, clientHeader },
+          `rate-limit.${bucket}`,
+          "error",
+          "rate limit exceeded",
+        );
+        throw domainError("RATE_LIMITED", "Too many requests; try again shortly");
+      }
+    };
+
+    if (url.startsWith("/api/auth/sign-in/email")) await enforceLimit("sign-in", 10);
+    if (url.startsWith("/api/auth/sign-up/email")) await enforceLimit("invitation", 5);
+    if (url.startsWith("/api/auth/reset-with-code")) await enforceLimit("reset", 5);
+    if (url.startsWith("/api/v1/bootstrap/redeem")) await enforceLimit("bootstrap", 5);
+
     if (
       url.startsWith("/api/v1/health") ||
       url.startsWith("/api/auth") ||
@@ -69,11 +93,10 @@ export function registerAuthHook(app: {
       return;
     }
 
-    const clientHeader = clientHeaderValue(request.headers["x-triathlon-client"]);
-
     // 1. Bearer access key.
     const authorization = request.headers.authorization;
     if (authorization !== undefined && authorization.startsWith("Bearer ")) {
+      await enforceLimit("access-key", 60);
       const secret = authorization.slice("Bearer ".length).trim();
       const principal = await identity.authenticateKey(secret);
       if (!principal) {
@@ -108,20 +131,27 @@ export function registerAuthHook(app: {
     // 2. Session cookie.
     const token = request.cookies[cookieName];
     if (token !== undefined && token !== "") {
-      const check = await identity.checkSession(token);
-      if (!check.ok) {
+      const session = await authModule.getSession(fromNodeHeaders(request.headers));
+      if (!session) {
         reply.clearCookie(cookieName, { path: "/" });
-        if (check.reason === "suspended") {
-          throw domainError("SUSPENDED", "This account is suspended");
-        }
         throw domainError("AUTH_REQUIRED", "Session is no longer valid");
       }
+      const user = await identity.getUser(
+        { actor: { userId: session.userId, keyScope: "session" }, requestId: request.id },
+        session.userId,
+      );
+      if (!user) throw domainError("AUTH_REQUIRED", "Session user no longer exists");
+      if (user.isSuspended) {
+        await authModule.revokeSessions(user.id);
+        reply.clearCookie(cookieName, { path: "/" });
+        throw domainError("SUSPENDED", "This account is suspended");
+      }
       const actor: Actor = {
-        userId: check.user.id,
+        userId: user.id,
         keyScope: "session",
-        sessionFingerprint: check.sessionId,
+        sessionFingerprint: session.sessionId,
       };
-      const auth: AuthPrincipal = { actor, sessionId: check.sessionId, clientHeader };
+      const auth: AuthPrincipal = { actor, sessionId: session.sessionId, clientHeader };
       request.auth = auth;
 
       // CSRF: mutating requests with a session credential must come from a

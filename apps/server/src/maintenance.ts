@@ -6,6 +6,7 @@
 
 import type { SqliteDb } from "./db/client.js";
 import type { Config } from "./config.js";
+import { runScheduledBackups } from "./operations.js";
 
 const IDEMPOTENCY_RETENTION_DAYS = 7;
 const EXPIRED_CODE_RETENTION_DAYS = 1;
@@ -42,8 +43,8 @@ export async function runMaintenance(
     .then((r) => Number(r[0]?.numDeletedRows ?? 0));
 
   const expiredSessions = await db
-    .deleteFrom("sessions")
-    .where("expires_at", "<", now.toISOString())
+    .deleteFrom("auth_sessions")
+    .where("expiresAt", "<", now.getTime())
     .execute()
     .then((r) => Number(r[0]?.numDeletedRows ?? 0));
 
@@ -53,7 +54,13 @@ export async function runMaintenance(
     .execute()
     .then((r) => Number(r[0]?.numDeletedRows ?? 0));
 
-  void config;
+  const expiredRateLimits = await db
+    .deleteFrom("rate_limits")
+    .where("reset_at", "<", now.toISOString())
+    .execute()
+    .then((r) => Number(r[0]?.numDeletedRows ?? 0));
+
+  const backups = await runScheduledBackups(sqlite, config, now);
 
   return {
     expiredInvitations,
@@ -61,5 +68,10 @@ export async function runMaintenance(
     staleResetCodes,
     expiredSessions,
     oldIdempotency,
+    expiredRateLimits,
+    scheduledDailyBackup: backups.dailyCreated ? 1 : 0,
+    scheduledWeeklyBackup: backups.weeklyCreated ? 1 : 0,
+    prunedDailyBackups: backups.dailyPruned,
+    prunedWeeklyBackups: backups.weeklyPruned,
   };
 }

@@ -57,7 +57,6 @@ test("bootstrap: code expires after the configured lifetime", async () => {
 
 test("login: wrong password is rejected; sessions expire after 30 days", async () => {
   const initial = new Date("2026-09-07T09:00:00Z");
-  const later = new Date("2026-10-08T09:00:00Z");
   let now = initial;
   const w = track(await buildWorld({ clock: { now: () => now } }));
   const user = await bootstrapOwner(w);
@@ -80,7 +79,7 @@ test("login: wrong password is rejected; sessions expire after 30 days", async (
   const viaRandom = await w.identity.checkSession(w.ids.token());
   assert.equal(viaRandom.ok, false);
 
-  now = later;
+  now = new Date(new Date(loginResult.session.expiresAt).getTime() + 1);
   const checkExpired = await w.identity.checkSession(loginResult.token);
   assert.equal(checkExpired.ok, false);
   assert.equal(checkExpired.reason, "expired");
@@ -106,8 +105,8 @@ test("suspension revokes sessions and blocks new logins; owner cannot be suspend
   await w.identity.suspendUser(w.ctx(admin.id), member.id, true);
   const check = await w.identity.checkSession(memberLogin.token);
   assert.equal(check.ok, false);
-  // Suspension revokes sessions, so revoked is the observable reason.
-  assert.ok(check.reason === "revoked" || check.reason === "suspended");
+  // Better Auth removes revoked sessions rather than retaining tombstones.
+  assert.equal(check.reason, "none");
   await assert.rejects(
     w.identity.login({ actor: { userId: member.id }, requestId: "r" }, member.email, "password123"),
     (e: Error) => e.message === "This account is suspended",

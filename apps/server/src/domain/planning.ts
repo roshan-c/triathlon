@@ -13,7 +13,7 @@
 import { sql } from "kysely";
 import { Value } from "@sinclair/typebox/value";
 import { Type } from "@sinclair/typebox";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { Database as DbSchema } from "../db/types.js";
 import type { SprintState } from "../db/types.js";
 import type { Db } from "../db/types.js";
@@ -28,7 +28,7 @@ type JsonValue = Exclude<Json, null>;
 import { requireOpenProject as requireOpenProjectSeam } from "./projects.js";
 import type { ProjectsSeam } from "./projects.js";
 import type { WorkSeam } from "./work.js";
-import { runCommand } from "./tx.js";
+import { asDomainTransaction, runCommand } from "./tx.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -137,6 +137,7 @@ interface ActivityPayload {
   sprintId?: JsonValue;
   ticketId?: JsonValue;
   points?: JsonValue;
+  revision?: JsonValue;
   tickets?: JsonValue;
   changes?: { points?: { before?: JsonValue; after?: JsonValue } };
   fromCategory?: JsonValue;
@@ -161,8 +162,8 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
   const requireOpenProject = (
     ctx: RequestContext,
     projectId: string,
-    trx?: Kysely<DbSchema>,
-  ): Promise<void> => requireOpenProjectSeam(deps.projects, ctx, projectId, trx);
+    trx?: Transaction<DbSchema>,
+  ): Promise<void> => requireOpenProjectSeam(deps.projects, ctx, projectId, trx ? asDomainTransaction(trx) : undefined);
 
   async function loadSprint(
     trx: Kysely<DbSchema>,
@@ -252,7 +253,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
     projectId: string,
     start: string,
     end: string,
-    trx?: Kysely<DbSchema>,
+    trx?: Transaction<DbSchema>,
   ): Promise<ActivityRow[]> {
     const rows = await (trx ?? db)
       .selectFrom("activity")
@@ -270,6 +271,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
     ticketId: string;
     at: string;
     points: number;
+    revision: number;
   }
 
   /**
@@ -282,10 +284,15 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
     sprintId: string,
     start: string,
     end: string,
-    trx?: Kysely<DbSchema>,
+    trx?: Transaction<DbSchema>,
   ): Promise<QualifyingClose[]> {
     const events = await projectEvents(projectId, start, end, trx);
-    const resolved: Array<{ at: string; ticketId: string }> = [];
+    const resolved: Array<{
+      at: string;
+      ticketId: string;
+      points: number;
+      revision: number | null;
+    }> = [];
     const reopenedAt = new Map<string, string>();
     for (const e of events) {
       // SAFETY: activity payloads are stored as JSON by runCommand; the
@@ -293,15 +300,20 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
       const payload = JSON.parse(e.payload_json) as ActivityPayload;
       const evTicketId = stringOf(payload.ticketId);
       if (e.type === "ticket.resolved" && evTicketId !== null) {
-        resolved.push({ at: e.occurred_at, ticketId: evTicketId });
+        resolved.push({
+          at: e.occurred_at,
+          ticketId: evTicketId,
+          points: typeofPayloadPoints(payload.points),
+          revision: numberOf(payload.revision),
+        });
       } else if (e.type === "ticket.reopened" && evTicketId !== null) {
         reopenedAt.set(evTicketId, e.occurred_at);
       }
     }
     // Latest close per ticket.
-    const latest = new Map<string, string>();
+    const latest = new Map<string, (typeof resolved)[number]>();
     for (const r of resolved) {
-      latest.set(r.ticketId, r.at);
+      latest.set(r.ticketId, r);
     }
     const members = await (trx ?? db)
       .selectFrom("sprint_members")
@@ -310,8 +322,9 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
       .execute();
     const qualifies: QualifyingClose[] = [];
     for (const m of members) {
-      const closeAt = latest.get(m.ticket_id);
-      if (!closeAt) continue;
+      const close = latest.get(m.ticket_id);
+      if (!close) continue;
+      const closeAt = close.at;
       // Belonged at close, and removal (if any) happened after the close.
       if (m.added_at > closeAt) continue;
       if (m.removed_at !== null && m.removed_at <= closeAt) continue;
@@ -319,12 +332,19 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
       // the close, and the ticket must currently be in the Done column.
       const reopen = reopenedAt.get(m.ticket_id);
       if (reopen !== undefined && reopen > closeAt) continue;
-      const core = await deps.work.ticketCore(projectId, m.ticket_id, trx);
-      if (!core || core.category !== "done") continue;
+      const core = await deps.work.ticketCore(projectId, m.ticket_id, trx ? asDomainTransaction(trx) : undefined);
+      if (
+        !core
+        || core.category !== "done"
+        || close.revision === null
+        || core.revision !== close.revision
+        || core.reviewState !== "approved"
+      ) continue;
       qualifies.push({
         ticketId: m.ticket_id,
         at: closeAt,
-        points: core.points ?? 0,
+        points: close.points,
+        revision: close.revision,
       });
     }
     return qualifies;
@@ -335,7 +355,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
     projectId: string,
     ticketId: string,
     before: string,
-    trx?: Kysely<DbSchema>,
+    trx?: Transaction<DbSchema>,
   ): Promise<string | null> {
     // The transition predicate lives in SQL so the single result is the
     // most recent actual not_started -> started transition for the ticket —
@@ -370,12 +390,15 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
   async function burndown(
     projectId: string,
     sprintId: string,
+    historyStart: string,
     start: string,
     end: string,
     tz: string,
-    trx?: Kysely<DbSchema>,
+    trx?: Transaction<DbSchema>,
   ): Promise<Array<{ day: string; pointsRemaining: number }>> {
-    const events = await projectEvents(projectId, start, end, trx);
+    // Scope may be assembled while the sprint is still planned. Replay from
+    // sprint creation so activation begins with that existing scope.
+    const events = await projectEvents(projectId, historyStart, end, trx);
 
     interface TicketState {
       inSprint: boolean;
@@ -514,11 +537,11 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
   async function computeMetrics(
     projectId: string,
     sprint: Sprint,
-    trx?: Kysely<DbSchema>,
+    trx?: Transaction<DbSchema>,
   ): Promise<SprintMetrics> {
     const start = sprint.activatedAt ?? "";
     const end = sprint.completedAt ?? nowIso();
-    const tz = (await deps.projects.timezoneFor(projectId, trx)) ?? "UTC";
+    const tz = (await deps.projects.timezoneFor(projectId, trx ? asDomainTransaction(trx) : undefined)) ?? "UTC";
     const closes = await qualifyingCloses(projectId, sprint.id, start, end, trx);
     const velocity = closes.reduce((acc, c) => acc + c.points, 0);
     const throughput = closes.length;
@@ -528,7 +551,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
     for (const c of closes) {
       const day = dayKeyInTz(new Date(c.at), tz);
       completedPerDay[day] = (completedPerDay[day] ?? 0) + 1;
-      const core = await deps.work.ticketCore(projectId, c.ticketId, trx);
+      const core = await deps.work.ticketCore(projectId, c.ticketId, trx ? asDomainTransaction(trx) : undefined);
       if (core) {
         leadTimes[c.ticketId] = secondsBetween(core.createdAt, c.at);
       }
@@ -537,7 +560,15 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
         cycleTimes[c.ticketId] = secondsBetween(started, c.at);
       }
     }
-    const burndownResult = await burndown(projectId, sprint.id, start, end, tz, trx);
+    const burndownResult = await burndown(
+      projectId,
+      sprint.id,
+      sprint.createdAt,
+      start,
+      end,
+      tz,
+      trx,
+    );
     return {
       state: sprint.completedAt !== null ? "completed" : "active",
       asOf: end,
@@ -592,7 +623,13 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
             })
             .execute();
           const sprint = await loadSprint(trx, projectId, sprintId);
-          spec.activityPayload = { sprintId, projectId, name };
+          spec.activityPayload = {
+            sprintId,
+            projectId,
+            name,
+            before: null,
+            after: { name, state: sprint.state, plannedStart: sprint.plannedStart, plannedEnd: sprint.plannedEnd },
+          };
           return sprint;
         },
       }),
@@ -670,7 +707,13 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
             .where("id", "=", sprintId)
             .execute();
           const updated = await loadSprint(trx, projectId, sprintId);
-          spec.activityPayload = { sprintId, projectId, activatedAt };
+          spec.activityPayload = {
+            sprintId,
+            projectId,
+            activatedAt,
+            before: { state: sprint.state, activatedAt: sprint.activatedAt },
+            after: { state: updated.state, activatedAt: updated.activatedAt },
+          };
           return updated;
         },
       }),
@@ -705,7 +748,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
           // Unfinished tickets lose their current sprint assignment; Closed
           // qualifying tickets keep their membership row as history.
           for (const m of members) {
-            const core = await deps.work.ticketCore(projectId, m.ticketId, trx);
+            const core = await deps.work.ticketCore(projectId, m.ticketId, asDomainTransaction(trx));
             const stillOpen = !core || core.category !== "done";
             if (m.removedAt === null && stillOpen) {
               await trx
@@ -742,7 +785,13 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
               }),
             })
             .execute();
-          spec.activityPayload = { sprintId, projectId, completedAt };
+          spec.activityPayload = {
+            sprintId,
+            projectId,
+            completedAt,
+            before: { state: sprint.state, completedAt: sprint.completedAt },
+            after: { state: "completed", completedAt },
+          };
           return { ...sprint, state: "completed", completedAt };
         },
       }),
@@ -760,7 +809,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
           targetType: "sprint",
           targetId: sprintId,
         },
-        run: async (trx) => {
+        run: async (trx, spec) => {
           await requireOpenProject(ctx, projectId, trx);
           const sprint = await loadSprint(trx, projectId, sprintId);
           if (sprint.state !== "planned") {
@@ -769,11 +818,17 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
               "Only planned sprints may be deleted; completed sprints and snapshots are immutable",
             );
           }
+          const deletedAt = nowIso();
           await trx
             .updateTable("sprints")
-            .set({ deleted_at: nowIso() })
+            .set({ deleted_at: deletedAt })
             .where("id", "=", sprintId)
             .execute();
+          spec.activityPayload = {
+            sprintId,
+            before: { state: sprint.state, deletedAt: null },
+            after: { state: sprint.state, deletedAt },
+          };
         },
       }),
 
@@ -820,7 +875,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
           const addedAt = nowIso();
           const addedTickets: Json[] = [];
           for (const ticketId of addable) {
-            const core = await deps.work.ticketCore(projectId, ticketId, trx);
+          const core = await deps.work.ticketCore(projectId, ticketId, asDomainTransaction(trx));
             await trx
               .insertInto("sprint_members")
               .values({
@@ -840,7 +895,12 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
               points: core?.points ?? null,
             });
           }
-          spec.activityPayload = { sprintId, tickets: addedTickets };
+          spec.activityPayload = {
+            sprintId,
+            tickets: addedTickets,
+            before: { ticketIds: [...already] },
+            after: { ticketIds: [...already, ...addable] },
+          };
           const members = await loadMembers(trx, sprintId);
           return { sprint: await loadSprint(trx, projectId, sprintId), members };
         },
@@ -873,7 +933,7 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
             .where("removed_at", "is", null)
             .executeTakeFirst();
           if (!row) throw domainError("NOT_FOUND", "Ticket is not a sprint member");
-          const core = await deps.work.ticketCore(projectId, ticketId, trx);
+          const core = await deps.work.ticketCore(projectId, ticketId, asDomainTransaction(trx));
           await trx
             .updateTable("sprint_members")
             .set({ removed_at: nowIso(), removed_by: ctx.actor.userId })
@@ -884,6 +944,8 @@ export function createPlanningService(deps: PlanningDeps): PlanningService {
             ticketId,
             number: core?.number ?? null,
             points: core?.points ?? null,
+            before: { member: true },
+            after: { member: false },
           };
           const members = await loadMembers(trx, sprintId);
           return { sprint: await loadSprint(trx, projectId, sprintId), members };

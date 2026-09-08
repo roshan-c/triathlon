@@ -21,6 +21,7 @@ export default function AuthPage() {
 
   const [mode, setMode] = useState<Mode>("login");
   const [name, setName] = useState("");
+  const [invitationCode, setInvitationCode] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +43,14 @@ export default function AuthPage() {
 
     try {
       if (mode === "signup") {
+        // SAFETY: the custom Triathlon sign-up route extends Better Auth's
+        // generated input with the required invitation code.
         const result = await authClient.signUp.email({
           name,
           email,
-          password
-        });
+          password,
+          code: invitationCode
+        } as Parameters<typeof authClient.signUp.email>[0]);
         if (result.error) {
           setError(result.error.message ?? "Failed to create account.");
           return;
@@ -121,15 +125,27 @@ export default function AuthPage() {
 
           <form className="space-y-4" onSubmit={submit}>
             {mode === "signup" ? (
-              <label className="block text-sm">
-                <span className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">Name</span>
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  className="w-full"
-                  required
-                />
-              </label>
+              <>
+                <label className="block text-sm">
+                  <span className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">Name</span>
+                  <input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    className="w-full"
+                    required
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">Invitation code</span>
+                  <input
+                    value={invitationCode}
+                    onChange={(event) => setInvitationCode(event.target.value.toUpperCase())}
+                    className="w-full font-mono uppercase"
+                    required
+                    autoComplete="off"
+                  />
+                </label>
+              </>
             ) : null}
 
             <label className="block text-sm">

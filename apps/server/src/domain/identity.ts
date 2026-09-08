@@ -12,8 +12,9 @@
  * transaction; do not call those from HTTP.
  */
 
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import type { Kysely } from "kysely";
+import { createHash } from "node:crypto";
+import { sql, type Kysely } from "kysely";
+import type { AuthModule } from "../auth.js";
 import type { Database as DbSchema } from "../db/types.js";
 import type { Db } from "../db/types.js";
 import { domainError } from "../errors.js";
@@ -21,7 +22,8 @@ import type { Clock } from "../time.js";
 import { addDays } from "../time.js";
 import type { Ids } from "../ids.js";
 import type { RequestContext } from "./context.js";
-import { runCommand } from "./tx.js";
+import { asDomainTransaction, runCommand, type DomainTransaction, unwrapDomainTransaction } from "./tx.js";
+import type { ProjectMembershipMutations } from "./projects.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,14 +130,16 @@ export interface CreateKeyInput {
 
 /** Projects-owned seam injected into Identity: who may do what in a project. */
 export interface ProjectsRoleSeam {
-  roleFor(userId: string, projectId: string, trx?: Kysely<DbSchema>): Promise<"owner" | "member" | "none">;
+  roleFor(userId: string, projectId: string, trx?: DomainTransaction): Promise<"owner" | "member" | "none">;
 }
 
 export interface IdentityDeps {
   db: Db;
+  auth: AuthModule;
   clock: Clock;
   ids: Ids;
   projects: ProjectsRoleSeam;
+  membership: ProjectMembershipMutations;
   /** Default invitation lifetime in days. */
   invitationDefaultTtlDays: number;
   /** Maximum lifetime of instance-wide keys in days. */
@@ -154,6 +158,10 @@ export interface IdentityService {
     ctx: RequestContext,
     input: { code: string; email: string; displayName: string; password: string },
   ): Promise<User>;
+  registerWithInvitation(
+    ctx: RequestContext,
+    input: { code: string; email: string; displayName: string; password: string },
+  ): Promise<{ user: User; projectId: string }>;
   // instance
   getInstanceMeta(): Promise<{ ownerUserId: string | null; timezone: string }>;
   listUsers(ctx: RequestContext): Promise<User[]>;
@@ -168,6 +176,8 @@ export interface IdentityService {
     email: string,
     password: string,
   ): Promise<{ user: User; session: Session; token: string }>;
+  /** Validate credentials and suspension before the Better Auth HTTP adapter creates a session. */
+  authorizeSignIn(ctx: RequestContext, email: string, password: string): Promise<User>;
   logout(ctx: RequestContext, sessionId: string): Promise<void>;
   changePassword(ctx: RequestContext, currentPassword: string, newPassword: string): Promise<void>;
   createResetCode(ctx: RequestContext, userId: string): Promise<{ code: string; expiresAt: string }>;
@@ -183,6 +193,7 @@ export interface IdentityService {
   listKeys(ctx: RequestContext): Promise<AccessKey[]>;
   revokeKey(ctx: RequestContext, keyId: string): Promise<void>;
   authenticateKey(secret: string): Promise<KeyPrincipal | null>;
+  consumeRateLimit(key: string, limit: number, windowSeconds: number): Promise<boolean>;
   // invitations
   createInvitation(
     ctx: RequestContext,
@@ -204,53 +215,8 @@ export interface IdentityService {
 }
 
 // ---------------------------------------------------------------------------
-// Password hashing (scrypt) and secret digests
+// Secret digests
 // ---------------------------------------------------------------------------
-
-const SCRYPT_N = 16384;
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const KEY_LEN = 64;
-/** Stored-format dummy hash used when a login email is unknown; keeps user
- * enumeration timing constant. */
-const DUMMY_STORED = (() => {
-  const salt = randomBytes(16);
-  const hash = scryptSync("dummy-password", salt, KEY_LEN, {
-    N: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
-  });
-  return ["scrypt", SCRYPT_N, SCRYPT_R, SCRYPT_P, salt.toString("base64"), hash.toString("base64")].join("$");
-})();
-
-export function hashPassword(password: string): string {
-  const salt = randomBytes(16);
-  const hash = scryptSync(password, salt, KEY_LEN, {
-    N: SCRYPT_N,
-    r: SCRYPT_R,
-    p: SCRYPT_P,
-  });
-  return [
-    "scrypt",
-    SCRYPT_N,
-    SCRYPT_R,
-    SCRYPT_P,
-    salt.toString("base64"),
-    hash.toString("base64"),
-  ].join("$");
-}
-
-export function verifyPassword(password: string, stored: string): boolean {
-  const parts = stored.split("$");
-  if (parts.length !== 6 || parts[0] !== "scrypt") return false;
-  const n = Number.parseInt(parts[1] ?? "", 10);
-  const r = Number.parseInt(parts[2] ?? "", 10);
-  const p = Number.parseInt(parts[3] ?? "", 10);
-  const salt = Buffer.from(parts[4] ?? "", "base64");
-  const expected = Buffer.from(parts[5] ?? "", "base64");
-  const actual = scryptSync(password, salt, expected.length, { N: n, r, p });
-  return timingSafeEqual(actual, expected);
-}
 
 export function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
@@ -274,12 +240,12 @@ export function isValidEmail(email: string): boolean {
 export const identityMutations = {
   /** Disable every non-revoked project-scoped key owned by a user. */
   revokeProjectKeys: (
-    trx: Kysely<DbSchema>,
+    trx: DomainTransaction,
     projectId: string,
     userId: string,
     now: string,
   ): Promise<number> =>
-    trx
+    unwrapDomainTransaction(trx)
       .updateTable("access_keys")
       .set({ revoked_at: now })
       .where("project_id", "=", projectId)
@@ -355,6 +321,9 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
   }
 
   async function requireInstanceAdmin(ctx: RequestContext, trx?: Kysely<DbSchema>): Promise<void> {
+    if (ctx.actor.keyScope !== undefined && ctx.actor.keyScope !== "session") {
+      throw domainError("FORBIDDEN", "Instance administration requires a browser session");
+    }
     const row = await requireUserRow(ctx.actor.userId, trx);
     if (row.is_instance_admin !== 1) {
       throw domainError("FORBIDDEN", "Instance Admin required");
@@ -362,6 +331,9 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
   }
 
   async function requireInstanceOwner(ctx: RequestContext, trx?: Kysely<DbSchema>): Promise<void> {
+    if (ctx.actor.keyScope !== undefined && ctx.actor.keyScope !== "session") {
+      throw domainError("FORBIDDEN", "Instance administration requires a browser session");
+    }
     const meta = await getMeta(trx);
     if (meta.ownerUserId !== ctx.actor.userId) {
       throw domainError("FORBIDDEN", "Instance Owner required");
@@ -508,13 +480,20 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
 
           const userId = ids.uuidv7();
           const createdAt = nowIso();
+          await deps.auth.createCredentialUser({
+            id: userId,
+            email,
+            name: displayName,
+            password: input.password,
+          });
           await trx
             .insertInto("users")
             .values({
               id: userId,
               email,
               display_name: displayName,
-              password_hash: hashPassword(input.password),
+              // Credentials are owned exclusively by Better Auth.
+              password_hash: "",
               is_instance_admin: 1,
               is_suspended: 0,
               created_at: createdAt,
@@ -538,6 +517,99 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
           return toUser(user, userId);
         },
       }),
+
+    registerWithInvitation: async (ctx, input) => {
+      const userId = ids.uuidv7();
+      const registrationCtx: RequestContext = {
+        ...ctx,
+        actor: { userId, keyScope: "session" },
+      };
+      return runCommand({
+        db,
+        ctx: registrationCtx,
+        clock,
+        ids,
+        spec: {
+          operation: "invitation.register",
+          activityType: "membership.added",
+          targetType: "user",
+          targetId: userId,
+        },
+        run: async (trx, spec) => {
+          const code = validateCode(input.code);
+          const email = validateEmail(input.email);
+          validatePassword(input.password);
+          const displayName = validateDisplayName(input.displayName);
+          const invitation = await trx
+            .selectFrom("invitations")
+            .selectAll()
+            .where("code_hash", "=", hashSecret(code))
+            .executeTakeFirst();
+          if (
+            !invitation ||
+            invitation.revoked_at !== null ||
+            (invitation.expires_at !== null && invitation.expires_at < nowIso())
+          ) {
+            throw domainError("INVALID_CODE", "Unknown, expired, or revoked invitation");
+          }
+          const project = await trx
+            .selectFrom("projects")
+            .select(["id", "deleted_at"])
+            .where("id", "=", invitation.project_id)
+            .executeTakeFirst();
+          if (!project || project.deleted_at !== null) {
+            throw domainError("INVALID_CODE", "Unknown, expired, or revoked invitation");
+          }
+          const existing = await trx
+            .selectFrom("users")
+            .select("id")
+            .where("email", "=", email)
+            .executeTakeFirst();
+          if (existing) throw domainError("EMAIL_EXISTS", "Email already registered");
+
+          const createdAt = nowIso();
+          await deps.auth.createCredentialUser({
+            id: userId,
+            email,
+            name: displayName,
+            password: input.password,
+          });
+          await trx
+            .insertInto("users")
+            .values({
+              id: userId,
+              email,
+              display_name: displayName,
+              password_hash: "",
+              is_instance_admin: 0,
+              is_suspended: 0,
+              created_at: createdAt,
+            })
+            .execute();
+          await deps.membership.addInvitedMember(
+            asDomainTransaction(trx),
+            invitation.project_id,
+            userId,
+            invitation.created_by,
+            createdAt,
+          );
+          spec.projectId = invitation.project_id;
+          spec.activityPayload = {
+            projectId: invitation.project_id,
+            userId,
+            before: null,
+            after: { role: "member" },
+          };
+          const meta = await getMeta(trx);
+          const user = await trx
+            .selectFrom("users")
+            .selectAll()
+            .where("id", "=", userId)
+            .executeTakeFirstOrThrow();
+          return { user: await toUser(user, meta.ownerUserId), projectId: invitation.project_id };
+        },
+      });
+    },
 
     // ---- instance ----
     getInstanceMeta: async () => {
@@ -674,12 +746,7 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
             .where("id", "=", userId)
             .execute();
           if (suspended) {
-            await trx
-              .updateTable("sessions")
-              .set({ revoked_at: nowIso() })
-              .where("user_id", "=", userId)
-              .where("revoked_at", "is", null)
-              .execute();
+            await deps.auth.revokeSessions(userId);
           }
           const updated = await trx
             .selectFrom("users")
@@ -691,6 +758,33 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
       }),
 
     // ---- auth ----
+    authorizeSignIn: (ctx, email, password) =>
+      runCommand({
+        db,
+        ctx,
+        clock,
+        ids,
+        spec: { operation: "auth.login" },
+        run: async (trx) => {
+          const normalized = normalizeEmail(email);
+          const row = await trx
+            .selectFrom("users")
+            .selectAll()
+            .where("email", "=", normalized)
+            .executeTakeFirst();
+          const valid = row ? await deps.auth.verifyPassword(row.id, password) : false;
+          if (!row || !valid) {
+            throw domainError("INVALID_CREDENTIALS", "Invalid email or password");
+          }
+          if (row.is_suspended === 1) {
+            await deps.auth.revokeSessions(row.id);
+            throw domainError("SUSPENDED", "This account is suspended");
+          }
+          const meta = await getMeta(trx);
+          return toUser(row, meta.ownerUserId);
+        },
+      }),
+
     login: (ctx, email, password) =>
       runCommand({
         db,
@@ -705,33 +799,30 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
             .selectAll()
             .where("email", "=", normalized)
             .executeTakeFirst();
-          const storedHash = row?.password_hash ?? DUMMY_STORED;
-          const valid = verifyPassword(password, storedHash);
-          if (!row || !valid) {
+          if (!row) {
             throw domainError("INVALID_CREDENTIALS", "Invalid email or password");
           }
           if (row.is_suspended === 1) {
             throw domainError("SUSPENDED", "This account is suspended");
           }
-          const sessionId = ids.uuidv7();
-          const token = ids.token();
-          const createdAt = nowIso();
-          const expiresAt = addDays(clock.now(), deps.sessionTtlDays).toISOString();
-          await trx
-            .insertInto("sessions")
-            .values({
-              id: sessionId,
-              token_hash: hashSecret(token),
-              user_id: row.id,
-              created_at: createdAt,
-              expires_at: expiresAt,
-              revoked_at: null,
-              last_used_at: createdAt,
-            })
-            .execute();
+          let credentialSession;
+          try {
+            credentialSession = await deps.auth.signInCredentials(normalized, password);
+          } catch {
+            throw domainError("INVALID_CREDENTIALS", "Invalid email or password");
+          }
           const meta = await getMeta(trx);
           const user = await toUser(row, meta.ownerUserId);
-          return { user, session: { id: sessionId, userId: row.id, createdAt, expiresAt }, token };
+          return {
+            user,
+            session: {
+              id: credentialSession.sessionId,
+              userId: row.id,
+              createdAt: credentialSession.createdAt,
+              expiresAt: credentialSession.expiresAt,
+            },
+            token: credentialSession.token,
+          };
         },
       }),
 
@@ -742,13 +833,8 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
         clock,
         ids,
         spec: { operation: "auth.logout" },
-        run: async (trx) => {
-          await trx
-            .updateTable("sessions")
-            .set({ revoked_at: nowIso() })
-            .where("id", "=", sessionId)
-            .where("user_id", "=", ctx.actor.userId)
-            .execute();
+        run: async () => {
+          await deps.auth.revokeSession(ctx.actor.userId, sessionId);
         },
       }),
 
@@ -759,27 +845,12 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
         clock,
         ids,
         spec: { operation: "auth.password_change" },
-        run: async (trx) => {
-          const row = await trx
-            .selectFrom("users")
-            .selectAll()
-            .where("id", "=", ctx.actor.userId)
-            .executeTakeFirstOrThrow();
-          if (!verifyPassword(currentPassword, row.password_hash)) {
+        run: async () => {
+          if (!(await deps.auth.verifyPassword(ctx.actor.userId, currentPassword))) {
             throw domainError("INVALID_CREDENTIALS", "Current password is incorrect");
           }
           validatePassword(newPassword);
-          await trx
-            .updateTable("users")
-            .set({ password_hash: hashPassword(newPassword) })
-            .where("id", "=", row.id)
-            .execute();
-          await trx
-            .updateTable("sessions")
-            .set({ revoked_at: nowIso() })
-            .where("user_id", "=", row.id)
-            .where("revoked_at", "is", null)
-            .execute();
+          await deps.auth.updatePassword(ctx.actor.userId, newPassword);
         },
       }),
 
@@ -849,17 +920,7 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
             .selectAll()
             .where("id", "=", row.user_id)
             .executeTakeFirstOrThrow();
-          await trx
-            .updateTable("users")
-            .set({ password_hash: hashPassword(newPassword) })
-            .where("id", "=", userRow.id)
-            .execute();
-          await trx
-            .updateTable("sessions")
-            .set({ revoked_at: nowIso() })
-            .where("user_id", "=", userRow.id)
-            .where("revoked_at", "is", null)
-            .execute();
+          await deps.auth.updatePassword(userRow.id, newPassword);
           await trx
             .updateTable("reset_codes")
             .set({ used_at: nowIso() })
@@ -871,33 +932,23 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
       }),
 
     checkSession: async (token) => {
-      const row = await db
-        .selectFrom("sessions")
-        .selectAll()
-        .where("token_hash", "=", hashSecret(token))
-        .executeTakeFirst();
-      if (!row) return { ok: false, reason: "none" };
-      if (row.revoked_at !== null) return { ok: false, reason: "revoked" };
-      if (row.expires_at < clock.now().toISOString()) {
+      const session = await deps.auth.findSession(token);
+      if (!session) return { ok: false, reason: "none" };
+      if (session.expiresAt < clock.now().toISOString()) {
         return { ok: false, reason: "expired" };
       }
       const meta = await getMeta();
       const userRow = await db
         .selectFrom("users")
         .selectAll()
-        .where("id", "=", row.user_id)
+        .where("id", "=", session.userId)
         .executeTakeFirst();
       if (!userRow) return { ok: false, reason: "none" };
       if (userRow.is_suspended === 1) return { ok: false, reason: "suspended" };
-      void db
-        .updateTable("sessions")
-        .set({ last_used_at: nowIso() })
-        .where("id", "=", row.id)
-        .execute();
       return {
         ok: true,
         user: await toUser(userRow, meta.ownerUserId),
-        sessionId: row.id,
+        sessionId: session.sessionId,
       };
     },
 
@@ -908,13 +959,8 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
         clock,
         ids,
         spec: { operation: "auth.session_revoke" },
-        run: async (trx) => {
-          await trx
-            .updateTable("sessions")
-            .set({ revoked_at: nowIso() })
-            .where("id", "=", sessionId)
-            .where("user_id", "=", ctx.actor.userId)
-            .execute();
+        run: async () => {
+          await deps.auth.revokeSession(ctx.actor.userId, sessionId);
         },
       }),
 
@@ -1082,7 +1128,7 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
             if (input.ownerType === "automation" && ownerUserId !== ctx.actor.userId) {
               throw domainError("FORBIDDEN", "An Automation key may only be created by its owner");
             }
-            const role = await deps.projects.roleFor(ownerUserId, input.projectId, trx);
+            const role = await deps.projects.roleFor(ownerUserId, input.projectId, asDomainTransaction(trx));
             if (role === "none") {
               throw domainError("FORBIDDEN", "Project membership required");
             }
@@ -1221,6 +1267,22 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
       };
     },
 
+    consumeRateLimit: async (key, limit, windowSeconds) => {
+      const now = clock.now();
+      const nowText = now.toISOString();
+      const resetAt = new Date(now.getTime() + windowSeconds * 1000).toISOString();
+      const row = await db
+        .insertInto("rate_limits")
+        .values({ key, attempts: 1, reset_at: resetAt })
+        .onConflict((oc) => oc.column("key").doUpdateSet({
+          attempts: sql<number>`case when reset_at <= ${nowText} then 1 else attempts + 1 end`,
+          reset_at: sql<string>`case when reset_at <= ${nowText} then ${resetAt} else reset_at end`,
+        }))
+        .returning(["attempts", "reset_at"])
+        .executeTakeFirstOrThrow();
+      return row.attempts <= limit;
+    },
+
     // ---- invitations ----
     createInvitation: (ctx, projectId, expiresAt) =>
       runCommand({
@@ -1237,7 +1299,7 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
           activityPayload: { projectId, expiresAt: expiresAt ?? "never" },
         },
         run: async (trx) => {
-          const role = await deps.projects.roleFor(ctx.actor.userId, projectId, trx);
+          const role = await deps.projects.roleFor(ctx.actor.userId, projectId, asDomainTransaction(trx));
           if (role !== "owner") {
             throw domainError("FORBIDDEN", "Only the Project Owner may invite members");
           }
@@ -1318,7 +1380,7 @@ export function createIdentityService(deps: IdentityDeps): IdentityService {
           activityPayload: { projectId, invitationId },
         },
         run: async (trx) => {
-          const role = await deps.projects.roleFor(ctx.actor.userId, projectId, trx);
+          const role = await deps.projects.roleFor(ctx.actor.userId, projectId, asDomainTransaction(trx));
           if (role !== "owner") {
             throw domainError("FORBIDDEN", "Only the Project Owner may revoke invitations");
           }

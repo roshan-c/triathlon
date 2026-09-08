@@ -266,6 +266,12 @@ test("soft deletion disables project keys; the owner restores; admins purge", as
   await w.projects.deleteProject(w.ctx(owner.id), project.id);
   await w.projects.purgeProject(w.ctx(owner.id), project.id);
   assert.equal(await w.projects.getProject(project.id), null);
+  const permanentActivity = await w.db
+    .selectFrom("activity")
+    .select("id")
+    .where("project_id", "=", project.id)
+    .execute();
+  assert.ok(permanentActivity.length > 0, "project purge preserves Activity");
 });
 
 test("invitation redemption adds membership; owner may revoke", async () => {

@@ -1,10 +1,10 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "@/lib/api";
 import { useAppContext } from "@/components/app-context";
 import { PageHeader } from "@/components/ui";
-import { cvx } from "@/lib/convex";
+import { api } from "@/lib/api";
 
 function asTimestamp(dateInput: string) {
   return new Date(`${dateInput}T00:00:00`).getTime();
@@ -21,14 +21,14 @@ function SprintDates({ startDate, endDate }: { startDate: number; endDate: numbe
 export default function SprintsPage() {
   const { externalId, project } = useAppContext();
 
-  const sprints = useQuery(cvx.sprints.list, {
+  const sprints = useQuery(api.sprints.list, {
     projectId: project.projectId,
     externalId
   });
 
-  const createSprint = useMutation(cvx.sprints.create);
-  const activateSprint = useMutation(cvx.sprints.activate);
-  const completeSprint = useMutation(cvx.sprints.complete);
+  const createSprint = useMutation(api.sprints.create);
+  const activateSprint = useMutation(api.sprints.activate);
+  const completeSprint = useMutation(api.sprints.complete);
 
   const [name, setName] = useState("");
   const [startDate, setStartDate] = useState("");

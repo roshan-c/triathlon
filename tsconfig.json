@@ -14,8 +14,7 @@
     "incremental": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@convex/*": ["convex/*"]
+      "@/*": ["src/*"]
     },
     "plugins": [
       {

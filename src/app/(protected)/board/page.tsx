@@ -17,11 +17,11 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "@/lib/api";
 import { PriorityBadge } from "@/components/priority-badge";
 import { useAppContext } from "@/components/app-context";
 import { EmptyState, PageHeader } from "@/components/ui";
-import { cvx, Priority } from "@/lib/convex";
+import { api, Priority } from "@/lib/api";
 
 type ReviewStatus = "none" | "requested" | "approved" | "rejected";
 
@@ -229,38 +229,38 @@ export default function BoardPage() {
 
   // SAFETY: tickets.board returns the board object with the columns and ticket
   // fields represented by the local view types below.
-  const board = useQuery(cvx.tickets.board, {
+  const board = useQuery(api.tickets.board, {
     projectId: project.projectId,
     externalId
   }) as Board | null;
 
-  const members = useQuery(cvx.projects.members, {
+  const members = useQuery(api.projects.members, {
     projectId: project.projectId,
     externalId
   });
 
-  const sprints = useQuery(cvx.sprints.list, {
+  const sprints = useQuery(api.sprints.list, {
     projectId: project.projectId,
     externalId
   });
 
   // SAFETY: tickets.dependencies returns the project ticket and blockedBy-link
   // arrays represented by DependencyGraph; loading returns undefined.
-  const dependencyGraph = useQuery(cvx.tickets.dependencies, {
+  const dependencyGraph = useQuery(api.tickets.dependencies, {
     projectId: project.projectId,
     externalId
   }) as DependencyGraph | undefined;
 
-  const createTicket = useMutation(cvx.tickets.create);
-  const moveTicket = useMutation(cvx.tickets.move);
-  const updateTicket = useMutation(cvx.tickets.update);
-  const deleteTicket = useMutation(cvx.tickets.remove);
-  const attachTicketToSprint = useMutation(cvx.tickets.attachToSprint);
-  const commentOnTicket = useMutation(cvx.tickets.comment);
-  const toggleBlocks = useMutation(cvx.tickets.toggleBlocks);
-  const requestReview = useMutation(cvx.tickets.requestReview);
-  const approveReview = useMutation(cvx.tickets.approveReview);
-  const rejectReview = useMutation(cvx.tickets.rejectReview);
+  const createTicket = useMutation(api.tickets.create);
+  const moveTicket = useMutation(api.tickets.move);
+  const updateTicket = useMutation(api.tickets.update);
+  const deleteTicket = useMutation(api.tickets.remove);
+  const attachTicketToSprint = useMutation(api.tickets.attachToSprint);
+  const commentOnTicket = useMutation(api.tickets.comment);
+  const toggleBlocks = useMutation(api.tickets.toggleBlocks);
+  const requestReview = useMutation(api.tickets.requestReview);
+  const approveReview = useMutation(api.tickets.approveReview);
+  const rejectReview = useMutation(api.tickets.rejectReview);
 
   const [newTicketTitle, setNewTicketTitle] = useState("");
   const [newTicketDescription, setNewTicketDescription] = useState("");
@@ -381,10 +381,10 @@ export default function BoardPage() {
   const selectedTicket = allTickets.find((ticket) => ticket._id === selectedTicketId) ?? null;
   const activeDragTicket = allTickets.find((ticket) => ticket._id === activeDragTicketId) ?? null;
 
-  // SAFETY: tickets.get validates and returns the TicketDetail shape defined
-  // by convex/tickets.ts; a skipped or loading query returns undefined.
+  // SAFETY: tickets.get validates and adapts the public API detail shape;
+  // a skipped or loading query returns undefined.
   const ticketDetail = useQuery(
-    cvx.tickets.get,
+    api.tickets.get,
     selectedTicketId
       ? {
           projectId: project.projectId,
@@ -399,7 +399,7 @@ export default function BoardPage() {
   const isClosed = selectedColumn?.name.toLowerCase() === "done";
 
   const activity = useQuery(
-    cvx.tickets.activity,
+    api.tickets.activity,
     selectedTicket
       ? {
           projectId: project.projectId,

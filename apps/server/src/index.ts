@@ -13,9 +13,10 @@ import {
   assertSchemaCompatible,
   migrateToLatest,
 } from "./db/migrate.js";
-import { LATEST_MIGRATION } from "./db/migrations/0001-init.js";
+import { LATEST_MIGRATION } from "./db/migrations/index.js";
 import { createServer, prepareDatabase } from "./server.js";
 import { runMaintenance } from "./maintenance.js";
+import { backupDatabase, checkIntegrity, restoreDatabase, timestampedBackupPath } from "./operations.js";
 import { systemClock } from "./time.js";
 
 const program = new Command();
@@ -24,6 +25,56 @@ program
   .name("triathlon")
   .description("Local administrative executable for a self-hosted Triathlon instance")
   .version("0.2.0");
+
+program
+  .command("backup")
+  .description("Create and verify an online SQLite backup")
+  .option("--config <path>", "configuration file", DEFAULT_CONFIG_PATH)
+  .option("--output <path>", "backup destination")
+  .action(async (opts: { config: string; output?: string }) => {
+    const config = loadConfig({ filePath: opts.config });
+    const sqlite = openSqlite(config.databasePath);
+    try {
+      const output = opts.output ?? timestampedBackupPath(config.backups.directory, "manual");
+      console.log(`triathlon: backup created at ${await backupDatabase(sqlite, output)}`);
+    } catch (error) {
+      console.error(`triathlon: ${error instanceof Error ? error.message : error}`);
+      process.exitCode = 1;
+    } finally {
+      sqlite.close();
+    }
+  });
+
+program
+  .command("restore")
+  .description("Verify a SQLite backup and atomically restore it")
+  .requiredOption("--from <path>", "backup file")
+  .option("--config <path>", "configuration file", DEFAULT_CONFIG_PATH)
+  .action((opts: { config: string; from: string }) => {
+    const config = loadConfig({ filePath: opts.config });
+    try {
+      console.log(`triathlon: database restored to ${restoreDatabase(opts.from, config.databasePath)}`);
+    } catch (error) {
+      console.error(`triathlon: ${error instanceof Error ? error.message : error}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("integrity")
+  .description("Run SQLite integrity_check against the configured database")
+  .option("--config <path>", "configuration file", DEFAULT_CONFIG_PATH)
+  .action((opts: { config: string }) => {
+    const config = loadConfig({ filePath: opts.config });
+    const sqlite = openSqlite(config.databasePath);
+    try {
+      const result = checkIntegrity(sqlite.driver);
+      console.log(JSON.stringify(result));
+      process.exitCode = result.ok ? 0 : 1;
+    } finally {
+      sqlite.close();
+    }
+  });
 
 program
   .command("serve")
@@ -35,6 +86,13 @@ program
     const sqlite = openSqlite(config.databasePath);
     try {
       if (opts.migrate) {
+        const applied = await appliedMigrations(sqlite.db);
+        const migrationPending = !applied.includes(LATEST_MIGRATION);
+        if (config.backups.enabled && applied.length > 0 && migrationPending) {
+          const backup = timestampedBackupPath(config.backups.directory, "pre-migration");
+          await backupDatabase(sqlite, backup);
+          console.log(`triathlon: pre-migration backup created at ${backup}`);
+        }
         await prepareDatabase(sqlite);
         console.log(`triathlon: migrations applied, schema ${LATEST_MIGRATION}`);
       } else {
@@ -46,7 +104,7 @@ program
       process.exit(1);
     }
 
-    const server = await createServer({ config });
+    const server = await createServer({ config, sqlite });
     try {
       await server.app.listen({ host: config.host, port: config.port });
     } catch (error) {
@@ -134,6 +192,7 @@ program
   .action(async (opts: { config: string }) => {
     const config = loadConfig({ filePath: opts.config });
     const sqlite = openSqlite(config.databasePath);
+    let serverOwnsDatabase = false;
     try {
       await prepareDatabase(sqlite);
       const { db } = sqlite;
@@ -148,7 +207,8 @@ program
         );
         return;
       }
-      const server = await createServer({ config });
+      const server = await createServer({ config, sqlite });
+      serverOwnsDatabase = true;
       try {
         const { code } = await server.identity.issueBootstrapCode({
           actor: { userId: "init" },
@@ -167,7 +227,7 @@ program
       console.error(`triathlon: ${error instanceof Error ? error.message : error}`);
       process.exitCode = 1;
     } finally {
-      sqlite.close();
+      if (!serverOwnsDatabase) sqlite.close();
     }
   });
 

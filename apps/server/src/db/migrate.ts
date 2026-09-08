@@ -5,8 +5,9 @@
  */
 
 import { Migrator, sql } from "kysely";
+import { setTimeout as delay } from "node:timers/promises";
 import { domainError } from "../errors.js";
-import { LATEST_MIGRATION, MIGRATIONS } from "./migrations/0001-init.js";
+import { LATEST_MIGRATION, MIGRATIONS } from "./migrations/index.js";
 import type { Db } from "./types.js";
 
 export interface MigrationOutcome {
@@ -15,15 +16,62 @@ export interface MigrationOutcome {
   results: unknown[];
 }
 
+/**
+ * SQLite's Kysely adapter only serializes migrations within one connection.
+ * A database-level write transaction is needed when two server processes
+ * start against the same file at the same time.
+ */
+async function migrateWithSqliteWriteLock(db: Db): Promise<MigrationOutcome> {
+  // Keep lock retries short so a second process can observe the first one's
+  // commit instead of waiting for the normal request busy timeout each time.
+  await sql`pragma busy_timeout = 250`.execute(db);
+  let transactionStarted = false;
+  try {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        await sql`begin immediate`.execute(db);
+        transactionStarted = true;
+        break;
+      } catch (error) {
+        // SAFETY: better-sqlite3 exposes SQLite error codes on its Error values.
+        const code = (error as { code?: unknown }).code;
+        if (code !== "SQLITE_BUSY" || attempt === 119) throw error;
+        await delay(50);
+      }
+    }
+    if (!transactionStarted) {
+      throw new Error("Timed out waiting for the SQLite migration lock");
+    }
+    const migrator = new Migrator({
+      db,
+      disableTransactions: true,
+      provider: { getMigrations: async () => MIGRATIONS },
+    });
+    // SAFETY: Kysely's MigratorResult is structurally the migration outcome.
+    const outcome = (await migrator.migrateToLatest()) as MigrationOutcome;
+    if (outcome.error) {
+      throw outcome.error;
+    }
+    await sql`commit`.execute(db);
+    transactionStarted = false;
+    return outcome;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await sql`rollback`.execute(db);
+      } catch {
+        // The transaction may already have been rolled back by SQLite.
+      }
+    }
+    throw error;
+  } finally {
+    await sql`pragma busy_timeout = 5000`.execute(db);
+  }
+}
+
 /** Apply all pending migrations. Throws on failure. */
 export async function migrateToLatest(db: Db): Promise<string[]> {
-  const migrator = new Migrator({
-    db,
-    provider: { getMigrations: async () => MIGRATIONS },
-  });
-  // SAFETY: Kysely's MigratorResult is structurally the migration outcome.
-  const outcome = (await migrator.migrateToLatest()) as MigrationOutcome;
-  if (outcome.error) throw outcome.error;
+  const outcome = await migrateWithSqliteWriteLock(db);
   return outcome.migrated ?? [];
 }
 

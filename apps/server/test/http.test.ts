@@ -7,11 +7,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig, type Config } from "../src/config.js";
 import { openSqlite } from "../src/db/client.js";
+import { createAuthModule, type AuthModule } from "../src/auth.js";
 import { migrateToLatest } from "../src/db/migrate.js";
 import type { FastifyInstance } from "fastify";
 import { buildApp, type App } from "../src/http/app.js";
-import { createIdentityService } from "../src/domain/identity.js";
-import { createProjectsService } from "../src/domain/projects.js";
+import { createIdentityService, type IdentityService } from "../src/domain/identity.js";
+import { createProjectsService, projectMembershipMutations } from "../src/domain/projects.js";
 import { createWorkService, workMutations } from "../src/domain/work.js";
 import { createPlanningService } from "../src/domain/planning.js";
 import { ProjectEventBus } from "../src/domain/events.js";
@@ -22,6 +23,8 @@ const ORIGIN = "http://localhost:3000";
 
 export interface HttpWorld {
   app: App;
+  identity: IdentityService;
+  auth: AuthModule;
   baseUrl: string;
   close(): void;
 }
@@ -31,18 +34,25 @@ export async function buildHttpWorld(config?: Partial<Config>): Promise<HttpWorl
     filePath: "does-not-exist.yaml",
     env: { TRI_DATABASE_PATH: ":memory:", TRI_TRUSTED_ORIGINS: ORIGIN },
   });
-  const merged: Config = { ...cfg, ...config };
+  const merged: Config = {
+    ...cfg,
+    ...config,
+    auth: { secret: "test-only-better-auth-secret-32-bytes" },
+  };
   const sqlite = openSqlite(":memory:");
   await migrateToLatest(sqlite.db);
   const { db } = sqlite;
   const bus = new ProjectEventBus();
+  const auth = createAuthModule({ database: sqlite.driver, config: merged, ids: realIds });
 
   const projects = createProjectsService({ db, clock: systemClock, ids: realIds, work: workMutations });
   const identity = createIdentityService({
     db,
+    auth,
     clock: systemClock,
     ids: realIds,
     projects,
+    membership: projectMembershipMutations,
     invitationDefaultTtlDays: 7,
     instanceKeyMaxTtlDays: 90,
     sessionTtlDays: 30,
@@ -53,11 +63,11 @@ export async function buildHttpWorld(config?: Partial<Config>): Promise<HttpWorl
 
   const app = await buildApp({
     config: merged,
-    db,
     clock: systemClock,
     ids: realIds,
     serverVersion: "0.2.0",
     identity,
+    auth,
     projects,
     work,
     planning,
@@ -67,6 +77,8 @@ export async function buildHttpWorld(config?: Partial<Config>): Promise<HttpWorl
   return {
     // SAFETY: buildApp returns the same TypeBox-typed instance.
     app: app as FastifyInstance & typeof app,
+    identity,
+    auth,
     baseUrl: "/api/v1",
     close: () => {
       void app.close();
@@ -104,10 +116,11 @@ async function api(
   });
 }
 
-async function bootstrap(agent: Agent): Promise<void> {
-  const codeRes = await api(agent, "post", "/bootstrap/code");
-  assert.equal(codeRes.statusCode, 200);
-  const { code } = codeRes.json();
+async function bootstrap(agent: Agent, identity: IdentityService): Promise<void> {
+  const { code } = await identity.issueBootstrapCode({
+    actor: { userId: "init" },
+    requestId: "test-init",
+  });
   const redeem = await api(agent, "post", "/bootstrap/redeem", {
     body: { code, email: "owner@example.com", displayName: "Owner", password: "password123" },
   });
@@ -126,8 +139,10 @@ test("bootstrap through HTTP closes registration; capabilities expose identity",
     const agent: Agent = { app: world.app };
     const state = await api(agent, "get", "/bootstrap");
     assert.equal(state.json().open, true);
+    const remoteCode = await api(agent, "post", "/bootstrap/code");
+    assert.equal(remoteCode.statusCode, 404, "bootstrap codes are local-admin only");
 
-    await bootstrap(agent);
+    await bootstrap(agent, world.identity);
 
     const caps = await api(agent, "get", "/capabilities");
     assert.equal(caps.statusCode, 200);
@@ -145,7 +160,7 @@ test("mutating cookie requests require a trusted origin (CSRF)", async () => {
   const world = await buildHttpWorld();
   try {
     const agent: Agent = { app: world.app };
-    await bootstrap(agent);
+    await bootstrap(agent, world.identity);
 
     const rejected = await api(agent, "post", "/projects", {
       body: { name: "Nope" },
@@ -164,11 +179,130 @@ test("mutating cookie requests require a trusted origin (CSRF)", async () => {
   }
 });
 
+test("an invitation creates a Better Auth account and project membership", async () => {
+  const world = await buildHttpWorld();
+  try {
+    const owner: Agent = { app: world.app };
+    await bootstrap(owner, world.identity);
+    const project = await api(owner, "post", "/projects", {
+      body: { name: "Invited" },
+      origin: true,
+    });
+    const invitation = await api(
+      owner,
+      "post",
+      `/projects/${project.json().id}/invitations`,
+      { body: {}, origin: true },
+    );
+    assert.equal(invitation.statusCode, 200);
+
+    const registration = await world.app.inject({
+      method: "POST",
+      url: "/api/auth/sign-up/email",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      payload: JSON.stringify({
+        code: invitation.json().code,
+        email: "member@example.com",
+        name: "Member",
+        password: "password123",
+      }),
+    });
+    assert.equal(registration.statusCode, 200);
+    assert.equal(registration.json().projectId, project.json().id);
+    const setCookie = registration.headers["set-cookie"];
+    const cookie = Array.isArray(setCookie) ? setCookie[0]?.split(";")[0] : setCookie?.split(";")[0];
+    assert.ok(cookie);
+
+    const member: Agent = { app: world.app, cookie };
+    const detail = await api(member, "get", `/projects/${project.json().id}`);
+    assert.equal(detail.statusCode, 200);
+    assert.equal(detail.json().role, "member");
+
+    const signIn = await world.app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/email",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      payload: JSON.stringify({ email: "member@example.com", password: "password123" }),
+    });
+    assert.equal(signIn.statusCode, 200);
+    assert.ok(signIn.headers["set-cookie"]);
+  } finally {
+    world.close();
+  }
+});
+
+test("suspended users cannot sign in through Better Auth", async () => {
+  const world = await buildHttpWorld();
+  try {
+    const owner: Agent = { app: world.app };
+    await bootstrap(owner, world.identity);
+    const project = await api(owner, "post", "/projects", {
+      body: { name: "Suspension" },
+      origin: true,
+    });
+    const invitation = await api(owner, "post", `/projects/${project.json().id}/invitations`, {
+      body: {},
+      origin: true,
+    });
+    const registration = await world.app.inject({
+      method: "POST",
+      url: "/api/auth/sign-up/email",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      payload: JSON.stringify({
+        code: invitation.json().code,
+        email: "suspended@example.com",
+        name: "Suspended",
+        password: "password123",
+      }),
+    });
+    assert.equal(registration.statusCode, 200);
+    const users = await api(owner, "get", "/users", { origin: true });
+    const member = users.json().find((user: { email: string }) => user.email === "suspended@example.com");
+    assert.ok(member);
+    const suspended = await api(owner, "post", `/users/${member.id}/suspend`, {
+      body: { suspended: true },
+      origin: true,
+    });
+    assert.equal(suspended.statusCode, 200);
+
+    const signIn = await world.app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/email",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      payload: JSON.stringify({ email: "suspended@example.com", password: "password123" }),
+    });
+    assert.equal(signIn.statusCode, 403);
+    assert.equal(signIn.json().error.code, "SUSPENDED");
+  } finally {
+    world.close();
+  }
+});
+
+test("authentication rate limits return the public Problem envelope", async () => {
+  const world = await buildHttpWorld();
+  try {
+    let last;
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      last = await world.app.inject({
+        method: "POST",
+        url: "/api/auth/sign-in/email",
+        headers: { "content-type": "application/json", origin: ORIGIN },
+        payload: JSON.stringify({ email: "missing@example.com", password: "password123" }),
+      });
+    }
+    assert.equal(last?.statusCode, 429);
+    assert.equal(last?.json().error.code, "RATE_LIMITED");
+    assert.ok(last?.json().error.requestId);
+  } finally {
+    world.close();
+  }
+});
+
 test("error envelope: stable codes, request ids, validation fields", async () => {
   const world = await buildHttpWorld();
   try {
     const agent: Agent = { app: world.app };
-    await bootstrap(agent);
+    await bootstrap(agent, world.identity);
 
     const missing = await api(agent, "get", "/projects/does-not-exist", { origin: true });
     void missing;
@@ -189,7 +323,7 @@ test("full ticket lifecycle over HTTP with bearer key: create, review, resolve, 
   const world = await buildHttpWorld();
   try {
     const owner: Agent = { app: world.app };
-    await bootstrap(owner);
+    await bootstrap(owner, world.identity);
     const project = await api(owner, "post", "/projects", {
       body: { name: "Ship It" },
       origin: true,
@@ -233,11 +367,12 @@ test("full ticket lifecycle over HTTP with bearer key: create, review, resolve, 
     await api(member, "post", `/projects/${projectId}/sprints/${sprintId}/members`, {
       body: { ticketIds: [t.id] },
     });
-    // Member-level access only: ticket creation works, project admin does not.
+    // A project-scoped key inherits its owner's project permissions while
+    // remaining unable to access any other project.
     const rename = await api(member, "patch", `/projects/${projectId}`, {
       body: { name: "Hijack" },
     });
-    assert.equal(rename.statusCode, 403);
+    assert.equal(rename.statusCode, 200);
   } finally {
     world.close();
   }
@@ -247,7 +382,7 @@ test("idempotency: same key+input replays the original result; different input c
   const world = await buildHttpWorld();
   try {
     const owner: Agent = { app: world.app };
-    await bootstrap(owner);
+    await bootstrap(owner, world.identity);
     const project = await api(owner, "post", "/projects", {
       body: { name: "P" },
       origin: true,
@@ -289,7 +424,7 @@ test("instance-wide keys cannot administer; only the Instance Owner reads audit"
   const world = await buildHttpWorld();
   try {
     const owner: Agent = { app: world.app };
-    await bootstrap(owner);
+    await bootstrap(owner, world.identity);
 
     const instanceKey = await api(owner, "post", "/access-keys", {
       body: { name: "ci", scope: "instance", expiresAt: "2026-12-01T00:00:00Z" },
@@ -314,7 +449,7 @@ test("suspension and revocations flow through HTTP", async () => {
   const world = await buildHttpWorld();
   try {
     const owner: Agent = { app: world.app };
-    await bootstrap(owner);
+    await bootstrap(owner, world.identity);
     const users = await api(owner, "get", "/users", { origin: true });
     const ownerId = users.json().find((u: { isInstanceOwner: boolean }) => u.isInstanceOwner).id;
 
@@ -333,7 +468,7 @@ test("SSE and detail reads refuse the unauthenticated and the unauthorized with 
   const world = await buildHttpWorld();
   try {
     const owner: Agent = { app: world.app };
-    await bootstrap(owner);
+    await bootstrap(owner, world.identity);
     const project = await api(owner, "post", "/projects", {
       body: { name: "P" },
       origin: true,

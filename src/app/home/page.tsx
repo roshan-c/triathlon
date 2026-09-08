@@ -14,7 +14,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Triathlon",
   description:
-    "Run your sprint board without Jira overhead. Realtime kanban, sprint planning, agile metrics, review gates, whiteboard, and an agent CLI."
+    "Run your sprint board without Jira overhead. Realtime kanban, sprint planning, agile metrics, review gates, and a public API for your own tools."
 };
 
 function Header() {
@@ -98,7 +98,7 @@ function MockBoard() {
     },
     {
       name: "Review",
-      tickets: [{ title: "Whiteboard save flow", points: 8 }]
+      tickets: [{ title: "API response caching", points: 8 }]
     },
     {
       name: "Done",
@@ -306,16 +306,16 @@ export default function HomePage() {
               <div className="md:col-span-4">
                 <Feature
                   icon={<IconPencil size={19} />}
-                  title="Project whiteboard"
-                  description="An Excalidraw whiteboard per project, autosaved locally with a shared board library."
-                  points={["Shared board library", "Dark and light canvas themes"]}
+                  title="One public API"
+                  description="Build your own frontend, CLI, or automation against the same documented API."
+                  points={["Generated TypeScript client", "SSE updates and idempotent commands"]}
                 />
               </div>
               <div className="md:col-span-8">
                 <Feature
                   icon={<IconTerminal size={19} />}
-                  title="Agent gateway and CLI"
-                  description="Automate the board from scripts or AI agents with a scoped HTTP API plus the tri CLI for humans and machines."
+                  title="CLI and automations"
+                  description="Use the same scoped HTTP API from scripts, automations, or the tri CLI."
                   points={["Server-to-server API with scoped keys", "tri CLI: tickets, sprints, metrics", "Full audit log of agent requests"]}
                 />
               </div>
@@ -363,8 +363,8 @@ export default function HomePage() {
                 Drive the board from a terminal or an agent.
               </h2>
               <p className="mt-3 text-sm leading-relaxed text-[var(--muted-foreground)]">
-                The tri CLI wraps the same agent gateway the backend exposes. Create tickets, move work, run reviews,
-                and pull metrics: from a script, a cron job, or an AI agent.
+                The tri CLI uses the same public API as the web app. Create tickets, move work, run reviews, and pull
+                metrics from a script, a cron job, or an AI agent.
               </p>
               <ul className="mt-6 space-y-2.5 text-sm text-[var(--foreground)]">
                 <li className="flex items-center gap-2.5">
@@ -445,7 +445,7 @@ $ tri board snapshot --json`}
             <a href="#automation" className="transition-colors hover:text-[var(--foreground)]">Automation</a>
             <Link href="/auth" className="transition-colors hover:text-[var(--foreground)]">Sign in</Link>
           </nav>
-          <p className="text-xs text-[var(--muted-foreground)]">MIT licensed · built with Vinext, Convex & Better Auth</p>
+          <p className="text-xs text-[var(--muted-foreground)]">Self-hosted · SQLite · Better Auth · public API</p>
         </div>
       </footer>
     </>

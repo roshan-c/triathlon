@@ -5,17 +5,19 @@
 
 import { afterEach } from "node:test";
 import { openSqlite, type SqliteDb } from "../src/db/client.js";
+import { createAuthModule, type AuthModule } from "../src/auth.js";
+import { defaultConfig } from "../src/config.js";
 import { migrateToLatest } from "../src/db/migrate.js";
 import { fixedClock, systemClock, type Clock } from "../src/time.js";
 import { realIds, fixedIds, type Ids } from "../src/ids.js";
 import { ProjectEventBus } from "../src/domain/events.js";
 import {
   createIdentityService,
-  hashPassword,
   type IdentityService,
 } from "../src/domain/identity.js";
 import {
   createProjectsService,
+  projectMembershipMutations,
   type ProjectsService,
 } from "../src/domain/projects.js";
 import {
@@ -37,6 +39,7 @@ export interface World {
   clock: Clock;
   ids: Ids;
   bus: ProjectEventBus;
+  auth: AuthModule;
   identity: IdentityService;
   projects: ProjectsService;
   work: WorkService;
@@ -58,6 +61,10 @@ export async function buildWorld(opts: WorldOptions = {}): Promise<World> {
   await migrateToLatest(sqlite.db);
   const db = sqlite.db;
   const bus = new ProjectEventBus();
+  const config = defaultConfig();
+  config.databasePath = ":memory:";
+  config.auth.secret = "test-only-better-auth-secret-32-bytes";
+  const auth = createAuthModule({ database: sqlite.driver, config, ids });
 
   const projects = createProjectsService({
     db,
@@ -67,9 +74,11 @@ export async function buildWorld(opts: WorldOptions = {}): Promise<World> {
   });
   const identity = createIdentityService({
     db,
+    auth,
     clock,
     ids,
     projects,
+    membership: projectMembershipMutations,
     invitationDefaultTtlDays: 7,
     instanceKeyMaxTtlDays: 90,
     sessionTtlDays: 30,
@@ -84,6 +93,7 @@ export async function buildWorld(opts: WorldOptions = {}): Promise<World> {
     clock,
     ids,
     bus,
+    auth,
     identity,
     projects,
     work,
@@ -134,13 +144,19 @@ export async function addUser(
 ): Promise<User> {
   const id = w.ids.uuidv7();
   const createdAt = w.clock.now().toISOString();
+  await w.auth.createCredentialUser({
+    id,
+    email,
+    name: displayName,
+    password: opts.password ?? "password123",
+  });
   await w.db
     .insertInto("users")
     .values({
       id,
       email,
       display_name: displayName,
-      password_hash: hashPassword(opts.password ?? "password123"),
+      password_hash: "",
       is_instance_admin: opts.isInstanceAdmin ? 1 : 0,
       is_suspended: 0,
       created_at: createdAt,
@@ -207,5 +223,5 @@ export function asActor(user: User): Actor {
   return { userId: user.id, keyScope: "session" };
 }
 
-export { fixedClock, fixedIds, systemClock, hashPassword };
+export { fixedClock, fixedIds, systemClock };
 export type { User };

@@ -15,6 +15,9 @@ const config: OxlintConfig = {
     ".superpowers/**",
     ".windsurf/**",
     "tools/oxlint/anti-slop/**",
+    // Generated transport types are checked by openapi-typescript, not by
+    // the handwritten application lint rules.
+    "packages/client/src/schema.ts",
   ],
   jsPlugins: [
     { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },

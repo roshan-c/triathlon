@@ -1,4 +1,4 @@
-.PHONY: help dev deploy env-check cli-build tri doctor typecheck codegen
+.PHONY: help dev server server-test build cli-build tri doctor typecheck generated
 
 # Export all variables from .env if present
 ifneq (,$(wildcard ./.env))
@@ -9,43 +9,37 @@ endif
 help:
 	@echo "Triathlon — available commands:"
 	@echo "  make dev        Start local dev server"
-	@echo "  make deploy     Deploy to production (Cloudflare + Convex)"
-	@echo "  make env-check  Verify required env vars are set"
+	@echo "  make server     Start the self-hosted API server"
+	@echo "  make server-test Run backend tests"
 	@echo "  make tri        Build and run the tri CLI"
 	@echo "  make doctor     Run tri doctor"
 	@echo "  make typecheck  Run TypeScript checks"
-	@echo "  make codegen    Regenerate Convex bindings"
-	@echo "  make build      Build frontend (vinext)"
+	@echo "  make generated  Regenerate OpenAPI client artifacts"
+	@echo "  make build      Build frontend and backend packages"
 
 dev:
 	npm run dev
 
-env-check:
-	@test -n "$(NEXT_PUBLIC_SITE_URL)" || (echo "Missing NEXT_PUBLIC_SITE_URL"; exit 1)
-	@test -n "$(NEXT_PUBLIC_CONVEX_URL_PROD)" || (echo "Missing NEXT_PUBLIC_CONVEX_URL_PROD"; exit 1)
-	@test -n "$(NEXT_PUBLIC_CONVEX_SITE_URL_PROD)" || (echo "Missing NEXT_PUBLIC_CONVEX_SITE_URL_PROD"; exit 1)
-	@echo "Env check passed"
+server:
+	npm run server:dev
 
-deploy: env-check
-	NEXT_PUBLIC_SITE_URL=$(NEXT_PUBLIC_SITE_URL) \
-	NEXT_PUBLIC_CONVEX_URL=$(NEXT_PUBLIC_CONVEX_URL_PROD) \
-	NEXT_PUBLIC_CONVEX_SITE_URL=$(NEXT_PUBLIC_CONVEX_SITE_URL_PROD) \
-	npm run deploy:prod
+server-test:
+	npm run server:test
 
 typecheck:
 	npm run typecheck
 
-codegen:
-	npm run convex:codegen
+generated:
+	npm run generated
 
 build:
-	npm run build
+	npm run build && npm run build -w @triathlon/server && npm run cli:build
 
 cli-build:
 	npm run cli:build
 
 tri: cli-build
-	@node cli-dist/index.js $(ARGS)
+	@npm run -s tri -- $(ARGS)
 
 doctor: cli-build
-	@node cli-dist/index.js doctor
+	@npm run -s tri -- doctor
