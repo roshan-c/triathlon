@@ -56,17 +56,6 @@ export default function OnboardingPage() {
     }
   }, [isPending, router, session]);
 
-  if (isPending || projects === undefined || createAccess === undefined) {
-    return (
-      <main className="mx-auto flex min-h-screen max-w-lg items-center px-6 py-12">
-        <section className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-sm)]">
-          <p className="text-sm text-[var(--muted-foreground)]">Loading project setup...</p>
-        </section>
-      </main>
-    );
-  }
-
-  const canCreateProjects = createAccess.canCreate;
   const createBlockedReason = useMemo(() => {
     if (createAccess?.canCreate) {
       return null;
@@ -82,6 +71,18 @@ export default function OnboardingPage() {
 
     return "You do not have permission to create a project.";
   }, [createAccess?.canCreate, createAccess?.reason]);
+
+  if (isPending || projects === undefined || createAccess === undefined) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-lg items-center px-6 py-12">
+        <section className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[var(--shadow-sm)]">
+          <p className="text-sm text-[var(--muted-foreground)]">Loading project setup...</p>
+        </section>
+      </main>
+    );
+  }
+
+  const canCreateProjects = createAccess.canCreate;
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
