@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo } from "react";
 import { authClient } from "@/lib/auth-client";
 import { api, useMutation, useProjectEvents, useQuery } from "@/lib/api";
+import { buildAuthRedirect } from "@/lib/auth-redirect";
 
 type ProjectSummary = {
   projectId: string;
@@ -68,8 +69,8 @@ export function AppContextProvider({ children }: { children: ReactNode }) {
     }
 
     if (!session) {
-      const next = `${pathname}${queryString ? `?${queryString}` : ""}`;
-      router.replace(`/auth?next=${encodeURIComponent(next)}`);
+      const authRedirect = buildAuthRedirect(pathname, queryString);
+      if (authRedirect) router.replace(authRedirect);
       return;
     }
 
