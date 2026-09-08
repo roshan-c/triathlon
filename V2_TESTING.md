@@ -60,6 +60,8 @@ docker compose exec triathlon node apps/server/dist/index.js init --config /app/
 
 Copy the printed Code value, then redeem it:
 
+You can either open the printed Setup URL in the browser and complete the form, or use the API command below. The `/setup` page creates the owner session and redirects to project setup.
+
 ~~~sh
 export BOOTSTRAP_CODE='paste-the-code-here'
 export OWNER_EMAIL='owner@example.com'
@@ -359,4 +361,3 @@ docker compose down -v
 Only run down -v when you intentionally want a fresh instance. It removes the Compose volumes triathlon_triathlon-data and triathlon_triathlon-backups.
 
 Stop the frontend development server with Ctrl-C in its terminal.
-
