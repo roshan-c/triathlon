@@ -42,7 +42,9 @@ export class TriathlonClient {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.accessKey = options.accessKey;
     this.clientName = options.clientName ?? "custom";
-    this.fetcher = options.fetch ?? globalThis.fetch;
+    // Browser fetch performs a receiver/brand check. Bind it once so calling
+    // the client method never changes the receiver to the TriathlonClient.
+    this.fetcher = (options.fetch ?? globalThis.fetch).bind(globalThis);
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
