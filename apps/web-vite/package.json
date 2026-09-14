@@ -1,0 +1,29 @@
+{
+  "name": "@triathlon/web-vite",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tabler/icons-react": "^3.46.0",
+    "@triathlon/client": "0.2.0",
+    "better-auth": "1.4.9",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.4",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "oxlint": "1.81.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  }
+}

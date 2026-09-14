@@ -20,6 +20,8 @@
     "tri": "npm run -s cli:build && node packages/cli/dist/index.js",
     "server:dev": "npm run dev -w @triathlon/server",
     "server:test": "npm run test -w @triathlon/server",
+    "web:vite": "npm run dev -w @triathlon/web-vite",
+    "web:vite:build": "npm run build -w @triathlon/client && npm run build -w @triathlon/web-vite",
     "generated": "npm run openapi -w @triathlon/server && npm run generate -w @triathlon/client",
     "generated:check": "npm run generated && git diff --exit-code -- apps/server/openapi.json packages/client/src/schema.ts"
   },
