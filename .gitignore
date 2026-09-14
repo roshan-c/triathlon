@@ -21,3 +21,4 @@ electron/dist/
 apps/server/data/
 apps/server/*.db*
 apps/server/test-results/
+metrics.html

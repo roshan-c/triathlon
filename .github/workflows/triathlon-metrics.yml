@@ -1,0 +1,28 @@
+name: Triathlon metrics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate metrics
+        run: node ./bin/triathlon.js metrics --json > metrics.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: triathlon-metrics
+          path: |
+            metrics.html
+            metrics.json

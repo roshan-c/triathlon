@@ -1,0 +1,23 @@
+name: Triathlon board
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run board:check
+      - run: npm test --if-present
+      - name: Validate linked tickets
+        if: github.event_name == 'pull_request'
+        run: npx --no-install triathlon pr-event --event approved >> "$GITHUB_STEP_SUMMARY"

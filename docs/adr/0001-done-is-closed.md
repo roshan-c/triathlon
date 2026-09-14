@@ -1,3 +1,0 @@
-# Done column is the closed state
-
-Triathlon needs a "closed" concept so tickets can be resolved and excluded from the frontier. We decided the Done column IS the closed state: no separate status field. Ordinary movement cannot cross its boundary. Resolve requires an approved current revision and an outcome comment before entering Done; Reopen is an explicit action that moves out of Done, creates a new revision, and invalidates approval. A second state variable would invite drift ("closed but sitting in Review?"), so these commands still read and change closure solely through column placement.
