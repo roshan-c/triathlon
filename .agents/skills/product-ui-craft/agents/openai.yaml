@@ -1,4 +1,0 @@
-interface:
-  display_name: "Product UI Craft"
-  short_description: "Design and review polished product interfaces"
-  default_prompt: "Design or refine this product UI with a strong visual brief and screenshot-based quality review."
