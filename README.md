@@ -1,283 +1,95 @@
-# THIS WAS 100% VIBE CODED. I NEEDED IT FOR ONE PROJECT AND DIDN'T WANT TO PUT ANY TIME INTO IT. NO I HAVEN'T READ THE CODE AT ALL. I DON'T CARE. IT'S A TOOL. IT WORKS REALLY WELL.
+# Triathlon Board
 
-# Triathlon
+Triathlon is a Git-native board for small teams. A repository contains its work state in `board.json` and a generated, self-contained `board.html`. There is no hosted application or database.
 
-Triathlon is a lightweight Trello + Jira alternative for small teams, built with Vinext, Convex, and Better Auth.
+## Start a board
 
-It includes:
+Requires Node.js 22 or newer.
 
-- Kanban board with drag-and-drop
-- Sprint planning
-- Agile metrics (velocity, burndown, throughput, cycle/lead time)
-- Project whiteboard
-- Agent gateway + CLI (`tri`) for automation
-
----
-
-## Tech stack
-
-- **Frontend:** Vinext, React, TypeScript, Tailwind
-- **Backend:** Convex (queries/mutations + realtime)
-- **Auth:** Better Auth (email/password, cookie sessions)
-- **UI libs:** dnd-kit, Recharts, Excalidraw
-
----
-
-## Core features
-
-- Email/password auth
-- Multi-project workspace (`?projectId=...` URL scoping)
-- Project creation restricted to owner/admin users
-- Default board columns on project creation:
-  - Backlog, Todo, In Progress, Review, Done
-- Card CRUD + drag movement tracking (`CardEvent`)
-- Review gate: cards must be approved before moving to Done
-- Sprint create / activate / complete
-- Metrics dashboard + whiteboard
-
----
-
-## Local development
-
-### 1) Install
-
-```bash
-npm install
+```sh
+npx triathlon init --key TEAM --name "Team board"
+npx triathlon serve
 ```
 
-### 2) Start Convex dev (in terminal A)
+The local editor opens on `http://127.0.0.1:4177`. Every accepted edit is validated, written atomically to `board.json`, and rendered into `board.html`.
 
-```bash
-npm run convex:dev
-```
+The generated HTML is a read-only snapshot. Open it directly when you only need to inspect the board.
 
-### 3) Configure frontend env (`.env.local`)
+## Repository scripts
 
-```bash
-NEXT_PUBLIC_SITE_URL=http://localhost:3000
-NEXT_PUBLIC_CONVEX_URL=<from convex dev>
-NEXT_PUBLIC_CONVEX_SITE_URL=<same deployment, but .convex.site>
-```
-
-### 4) Configure Convex env
-
-```bash
-npx convex env set SITE_URL http://localhost:3000
-npx convex env set BETTER_AUTH_SECRET "<long-random-secret>"
-```
-
-Optional: allowlisted admins for project creation
-
-```bash
-npx convex env set PROJECT_ADMIN_EXTERNAL_IDS_JSON '["<better-auth-user-id>"]'
-```
-
-### 5) Generate auth schema (only when auth options change)
-
-```bash
-npm run auth:generate
-```
-
-### 6) Generate Convex bindings
-
-```bash
-npm run convex:codegen
-```
-
-### 7) Start app (terminal B)
-
-```bash
-npm run dev
-```
-
----
-
-## Production deployment (Cloudflare + Convex)
-
-### Convex
-
-```bash
-npx convex env set SITE_URL https://<your-domain>
-npx convex env set BETTER_AUTH_SECRET "<prod-secret>"
-```
-
-### Frontend
-
-Set public vars to production values:
-
-- `NEXT_PUBLIC_SITE_URL=https://<your-domain>`
-- `NEXT_PUBLIC_CONVEX_URL=https://<prod-deployment>.convex.cloud`
-- `NEXT_PUBLIC_CONVEX_SITE_URL=https://<prod-deployment>.convex.site`
-
-Then deploy:
-
-```bash
-npm run deploy:prod
-```
-
----
-
-## Smoke test checklist
-
-1. Open `/auth` and sign in
-2. If owner/admin, create a project
-3. Confirm redirect to `/dashboard?projectId=...`
-4. Confirm board columns exist
-5. Create and move a card; refresh and verify persistence
-6. Open Metrics and Whiteboard pages
-
----
-
-## Triathlon CLI (`tri`)
-
-The CLI wraps the same agent gateway and is built for both humans and agents.
-
-### Required env
-
-- `TRI_AGENT_URL` (must point to `/agent/v1`)
-- `TRI_AGENT_KEY` (from `AGENT_KEYS_JSON`)
-- `TRI_PROJECT_ID` (safety check against key scope)
-
-Example:
-
-```bash
-TRI_AGENT_URL=https://<deployment>.convex.site/agent/v1
-TRI_AGENT_KEY=sk_live_...
-TRI_PROJECT_ID=<projectId>
-```
-
-### Install globally from this repo
-
-```bash
-npm install -g .
-```
-
-### Quick usage
-
-```bash
-tri doctor
-tri project summary
-tri board snapshot --json
-```
-
-### Common commands
-
-```bash
-tri cards create --title "Define agent goals" --column-name Backlog --points 3 --priority high
-tri cards move --id <cardId> --to-column-name "In Progress"
-tri cards request-review --id <cardId>
-tri cards approve-review --id <cardId>
-tri cards reject-review --id <cardId>
-tri cards delete --id <cardId>          # prompts
-tri cards delete --id <cardId> --force  # no prompt
-tri sprints list
-tri metrics velocity
-```
-
-Use `--json` on any command for machine-readable output.
-
----
-
-## Agent gateway API (`/agent/v1`)
-
-Server-to-server endpoint for automation (whiteboard excluded).
-
-- **Endpoint:** `POST https://<convex-site-url>/agent/v1`
-- **Auth:** `Authorization: Bearer <agent-key>`
-- **Config env:** `AGENT_KEYS_JSON`
-
-Each key is scoped to one project via `projectId`.
-
-### `AGENT_KEYS_JSON` example
+When Triathlon is installed as a development dependency:
 
 ```json
-[
-  {
-    "keyId": "agent-main",
-    "key": "sk_live_...",
-    "keyLabel": "primary-agent",
-    "projectId": "<convex-project-id>",
-    "externalId": "<user-external-id>",
-    "enabled": true
+{
+  "scripts": {
+    "board": "triathlon serve",
+    "board:render": "triathlon render",
+    "board:validate": "triathlon validate",
+    "board:metrics": "triathlon metrics",
+    "board:check": "triathlon validate && triathlon render --check"
   }
-]
-```
-
-### Request shape
-
-```json
-{
-  "tool": "boards.createCard",
-  "args": {
-    "columnName": "Backlog",
-    "title": "Investigate dashboard flow",
-    "description": "Verify project switching keeps metrics scoped",
-    "storyPoints": 2,
-    "priority": "medium"
-  },
-  "requestId": "req-001"
 }
 ```
 
-### Response shape
+## Commands
 
-```json
-{
-  "ok": true,
-  "requestId": "req-001",
-  "result": "<tool-result>"
-}
+```sh
+npx triathlon init --key TEAM --name "Team board"
+npx triathlon serve
+npx triathlon validate
+npx triathlon render
+npx triathlon metrics
 ```
 
-### Review workflow
+Use `serve --no-open` to start without opening a browser. Use `serve --port 5000` to select another port.
 
-Cards must be approved before moving to Done:
+`metrics` reads committed versions of `board.json` from Git history. It writes a self-contained `metrics.html` report with sprint figures and a burndown graph. Use `metrics --json` to also print machine-readable results.
 
-1. Create or update a card
-2. Call `boards.requestReview` when ready
-3. Reviewer calls `boards.approveReview` or `boards.rejectReview`
-4. Only approved cards can move to Done via `boards.moveCard`
+## Pull-request integration
 
-Errors:
+Each pull request must contain this trailer in its body:
 
-- `REVIEW_REQUIRED` — card is awaiting review
-- `REVIEW_REJECTED` — card was rejected; re-request after fixes
+```text
+Triathlon-Tickets: TEAM-12, TEAM-18
+```
 
-### Allowed tools
+The included workflows:
 
-- `system.describe`
-- `projects.getSummary`
-- `projects.members`
-- `boards.getSnapshot`
-- `boards.createCard`
-- `boards.updateCard`
-- `boards.moveCard` (`toColumnId` or `toColumnName`)
-- `boards.deleteCard`
-- `boards.attachCardToSprint`
-- `boards.requestReview`
-- `boards.approveReview`
-- `boards.rejectReview`
-- `sprints.list`
-- `sprints.create`
-- `sprints.activate`
-- `sprints.complete`
-- `metrics.forSprint`
-- `metrics.velocityHistory`
+- validate `board.json`, generated HTML, linked tickets, and tests;
+- generate downloadable `metrics.html` and `metrics.json` artifacts on manual request;
+- move linked not-started tickets to the configured started column when a PR opens;
+- report linked tickets when a review is approved;
+- move linked open tickets to the configured done column when the PR merges;
+- leave tickets unchanged when a PR closes without merging.
 
----
+PR transitions are attributed to the GitHub user who caused the event. Bot updates are idempotent and use `[skip ci]` commits.
 
-## License
+The merge update writes directly to the base branch. Protected repositories must permit the workflow token to make this board update.
 
-Triathlon is released under the MIT License.
+## Data and conflict behavior
 
-## Acknowledgments
+`board.json` is the source of truth. Tickets and sprints are keyed by stable IDs. The writer uses stable formatting and sparse numeric ranks so normal ticket moves change as few lines as possible.
 
-- [Excalidraw](https://excalidraw.com) — MIT licensed whiteboard library.
+Two contributors can still conflict when they edit the same JSON area. Resolve the Git conflict, then run:
 
-## Skill package
+```sh
+npm run board:check
+```
 
-A reusable skill manifest is included at:
+The local editor uses a revision check. It rejects a save if another process changed `board.json` after the page loaded.
 
-- `skills/triathlon-agent/SKILL.md`
+## Sprints and metrics
 
-Use this for skill-capable agent runtimes that should operate Triathlon safely and consistently.
+At most one sprint can be active. A completed sprint receives an immutable snapshot containing:
+
+- velocity;
+- throughput;
+- average lead time;
+- average cycle time;
+- daily burndown.
+
+Active metrics use Git commit timestamps. GitHub Actions must check out full history (`fetch-depth: 0`) for accurate reports.
+
+## Package
+
+The npm package name is `triathlon`. It exposes both `triathlon` and the shorter installed command `tri`.

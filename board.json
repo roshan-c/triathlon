@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "key": "TRI",
+    "name": "Triathlon",
+    "description": "",
+    "nextTicketNumber": 2
+  },
+  "board": {
+    "columns": [
+      {
+        "id": "backlog",
+        "name": "Backlog",
+        "category": "not-started",
+        "wipLimit": null
+      },
+      {
+        "id": "in-progress",
+        "name": "In progress",
+        "category": "started",
+        "wipLimit": 4
+      },
+      {
+        "id": "done",
+        "name": "Done",
+        "category": "done",
+        "wipLimit": null
+      }
+    ],
+    "pullRequests": {
+      "openedColumnId": "in-progress",
+      "mergedColumnId": "done"
+    }
+  },
+  "sprints": {
+    "sprint-1": {
+      "id": "sprint-1",
+      "name": "Sprint 1",
+      "state": "active",
+      "plannedStart": "2026-09-14T00:00:00.000Z",
+      "plannedEnd": "2026-09-21T23:59:59.999Z",
+      "actualStart": "2026-09-14T18:49:43.925Z",
+      "actualEnd": null,
+      "ticketIds": [
+        "TRI-1"
+      ],
+      "metrics": null
+    }
+  },
+  "tickets": {
+    "TRI-1": {
+      "id": "TRI-1",
+      "title": "Set up the first sprint",
+      "description": "Edit this ticket or create another one from the local board.",
+      "columnId": "in-progress",
+      "rank": 1000,
+      "priority": "medium",
+      "storyPoints": 1,
+      "labels": [
+        "getting-started"
+      ],
+      "assignee": null,
+      "sprintId": "sprint-1",
+      "createdAt": "2026-09-14T18:48:00.482Z",
+      "updatedAt": "2026-09-14T18:49:56.403Z",
+      "comments": [
+        {
+          "id": "f800e977-df6a-46d1-b44f-06ff17df7594",
+          "author": "roshan-c",
+          "body": "Browser save cycle verified.",
+          "createdAt": "2026-09-14T18:49:56.403Z"
+        }
+      ]
+    }
+  }
+}

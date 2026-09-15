@@ -1,51 +1,40 @@
 {
-  "name": "agile-board",
+  "name": "triathlon",
   "version": "0.1.0",
-  "private": true,
+  "description": "A Git-native board for small teams",
   "type": "module",
   "bin": {
-    "tri": "cli-dist/index.js"
+    "triathlon": "bin/triathlon.js",
+    "tri": "bin/triathlon.js"
   },
+  "files": [
+    "bin",
+    "lib",
+    "ui",
+    "schema",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
-    "start": "vinext start",
-    "deploy:prod": "vinext deploy",
-    "lint": "vinext lint",
-    "typecheck": "tsc --noEmit",
-    "cli:build": "tsc -p tsconfig.cli.json",
-    "tri": "npm run -s cli:build && node cli-dist/index.js",
-    "prepare": "npm run -s cli:build",
-    "convex:dev": "convex dev",
-    "convex:codegen": "convex codegen",
-    "auth:generate": "npx @better-auth/cli@latest generate --yes --config ./convex/betterAuth/auth.ts --output ./convex/betterAuth/schema.ts"
+    "board": "node ./bin/triathlon.js serve",
+    "board:init": "node ./bin/triathlon.js init",
+    "board:render": "node ./bin/triathlon.js render",
+    "board:validate": "node ./bin/triathlon.js validate",
+    "board:metrics": "node ./bin/triathlon.js metrics",
+    "board:check": "node ./bin/triathlon.js validate && node ./bin/triathlon.js render --check",
+    "test": "node --test",
+    "typecheck": "node --check ./bin/triathlon.js && node --check ./lib/board.js && node --check ./lib/history.js && node --check ./lib/scaffold.js && node --check ./lib/server.js && node --check ./lib/template.js",
+    "prepublishOnly": "npm test && npm run board:check"
   },
-  "dependencies": {
-    "@convex-dev/better-auth": "0.10.13",
-    "@dnd-kit/core": "^6.3.1",
-    "@dnd-kit/sortable": "^10.0.0",
-    "@dnd-kit/utilities": "^3.2.2",
-    "@excalidraw/excalidraw": "^0.18.0",
-    "better-auth": "1.4.9",
-    "commander": "^14.0.1",
-    "convex": "^1.28.0",
-    "date-fns": "^4.1.0",
-    "next": "^16.0.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "recharts": "^3.3.0",
-    "vinext": "^0.0.21"
+  "engines": {
+    "node": ">=22"
   },
-  "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.26.0",
-    "@types/node": "^24.10.1",
-    "@types/react": "^19.2.4",
-    "@types/react-dom": "^19.2.3",
-    "autoprefixer": "^10.4.22",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.9.3",
-    "vite": "^7.2.4",
-    "wrangler": "^4.70.0"
-  }
+  "keywords": [
+    "kanban",
+    "github",
+    "project-management",
+    "sprint"
+  ],
+  "license": "MIT"
 }
