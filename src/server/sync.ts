@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
 import chokidar, { type FSWatcher } from "chokidar";
+import { inspectPrForBranch, mergePrWithGh } from "../core/github.js";
 import { ProjectStore } from "../core/project.js";
 import { getRegistryPath, readRegistry } from "../core/registry.js";
-import { configPath, pathExists, readAllTickets, readConfig, readCycles, triathlonDir } from "../core/storage.js";
+import { configPath, pathExists, readAllTickets, readConfig, readCycles, triathlonDir, writeTicket } from "../core/storage.js";
 import { getT3ThreadStatus } from "../core/t3.js";
 import type { ProjectSnapshot, ProjectSummary, RegisteredProject, ThemePreference } from "../core/types.js";
 
@@ -93,6 +94,7 @@ export class SyncEngine extends EventEmitter {
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private subscriberCount = 0;
   private t3PollTimer: NodeJS.Timeout | null = null;
+  private ciPollTimer: NodeJS.Timeout | null = null;
   private t3StatusCache = new Map<string, T3LiveStatusMap>();
   private started = false;
 
@@ -128,6 +130,13 @@ export class SyncEngine extends EventEmitter {
     void readRegistry()
       .then((reg) => this.syncProjectWatchers(reg.projects))
       .catch(() => {});
+
+    // Always watch any tickets queued with `mergeState === "waiting_ci"` (even if no browser tab is open!)
+    if (!this.ciPollTimer) {
+      this.ciPollTimer = setInterval(() => {
+        void this.pollWaitingCiMerges();
+      }, 15_000);
+    }
   }
 
   syncProjectWatchers(projects: RegisteredProject[]): void {
@@ -278,10 +287,73 @@ export class SyncEngine extends EventEmitter {
     }
   }
 
+  private async pollWaitingCiMerges(): Promise<void> {
+    const reg = await readRegistry().catch(() => null);
+    if (!reg) return;
+    for (const proj of reg.projects) {
+      if (!(await pathExists(configPath(proj.path)))) continue;
+      try {
+        const tickets = await readAllTickets(proj.path);
+        const waiting = tickets.filter((t) => t.review.mergeState === "waiting_ci" && Boolean(t.branch));
+        if (!waiting.length) continue;
+
+        const store = new ProjectStore(proj.path);
+        for (const ticket of waiting) {
+          if (!ticket.branch) continue;
+          try {
+            const pr = await inspectPrForBranch(proj.path, ticket.branch);
+            if (!pr) continue;
+            if (pr.state === "MERGED") {
+              await store.approveReview(ticket.id, {
+                actor: ticket.review.decidedBy ?? undefined,
+                prNumber: pr.number,
+                prUrl: pr.url,
+                mergeState: "merged",
+              });
+              await this.publishProjectChange(proj.id, proj.path);
+              continue;
+            }
+            if (pr.checks.overall === "fail") {
+              ticket.review.mergeState = "ci_failed";
+              ticket.updatedAt = new Date().toISOString();
+              ticket.comments.push({
+                id: `ci-${Date.now().toString(36)}`,
+                author: "triathlon",
+                body: `Auto-merge halted on PR #${pr.number} because CI failed: ${pr.checks.failedNames.join(", ")}`,
+                createdAt: ticket.updatedAt,
+              });
+              await writeTicket(proj.path, ticket);
+              await this.publishProjectChange(proj.id, proj.path);
+              continue;
+            }
+            if (pr.checks.overall === "pass" || pr.checks.overall === "none") {
+              await mergePrWithGh(proj.path, pr.number);
+              await store.approveReview(ticket.id, {
+                actor: ticket.review.decidedBy ?? undefined,
+                prNumber: pr.number,
+                prUrl: pr.url,
+                mergeState: "merged",
+              });
+              await this.publishProjectChange(proj.id, proj.path);
+            }
+          } catch {
+            // Transient gh / network error; retry next tick
+          }
+        }
+      } catch {
+        // Ignore project read error
+      }
+    }
+  }
+
   async close(): Promise<void> {
     if (this.t3PollTimer) {
       clearInterval(this.t3PollTimer);
       this.t3PollTimer = null;
+    }
+    if (this.ciPollTimer) {
+      clearInterval(this.ciPollTimer);
+      this.ciPollTimer = null;
     }
     for (const timer of this.debounceTimers.values()) clearTimeout(timer);
     this.debounceTimers.clear();

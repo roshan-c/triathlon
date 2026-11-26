@@ -117,6 +117,12 @@ function normalizeReview(raw: unknown): ReviewPacket {
     filesChanged: Array.isArray(obj.filesChanged) ? (obj.filesChanged as ReviewPacket["filesChanged"]) : [],
     checks: Array.isArray(obj.checks) ? (obj.checks as ReviewPacket["checks"]) : [],
     note: typeof obj.note === "string" ? obj.note : null,
+    prNumber: typeof obj.prNumber === "number" ? obj.prNumber : null,
+    prUrl: typeof obj.prUrl === "string" ? obj.prUrl : null,
+    mergeState:
+      obj.mergeState === "waiting_ci" || obj.mergeState === "merged" || obj.mergeState === "ci_failed"
+        ? obj.mergeState
+        : "none",
   };
 }
 
@@ -215,6 +221,9 @@ export function serializeTicketMarkdown(ticket: Ticket): string {
     if (ticket.review.filesChanged?.length) rev.filesChanged = ticket.review.filesChanged;
     if (ticket.review.checks?.length) rev.checks = ticket.review.checks;
     if (ticket.review.note) rev.note = ticket.review.note;
+    if (ticket.review.prNumber) rev.prNumber = ticket.review.prNumber;
+    if (ticket.review.prUrl) rev.prUrl = ticket.review.prUrl;
+    if (ticket.review.mergeState && ticket.review.mergeState !== "none") rev.mergeState = ticket.review.mergeState;
     frontmatter.review = rev;
   }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { inspectPrForBranch, markPrReady, mergePrWithGh, type PrInfo } from "./github.js";
 import { toggleChecklistInMarkdown } from "./markdown.js";
 import { buildMetricsReport, calculateCycleMetrics } from "./metrics.js";
 import { projectIdForPath, registerProject } from "./registry.js";
@@ -781,7 +782,16 @@ export class ProjectStore {
     return saved;
   }
 
-  async approveReview(ticketId: string, options?: { note?: string; actor?: string }): Promise<Ticket> {
+  async approveReview(
+    ticketId: string,
+    options?: {
+      note?: string;
+      actor?: string;
+      prNumber?: number | null;
+      prUrl?: string | null;
+      mergeState?: Ticket["review"]["mergeState"];
+    },
+  ): Promise<Ticket> {
     const [config, ticket, allTickets] = await Promise.all([
       readConfig(this.root),
       readTicket(this.root, ticketId),
@@ -805,7 +815,10 @@ export class ProjectStore {
       state: "approved",
       decidedBy: actor,
       decidedAt: now,
-      note: options?.note?.trim() || null,
+      note: options?.note?.trim() || ticket.review.note || null,
+      prNumber: options?.prNumber ?? ticket.review.prNumber ?? null,
+      prUrl: options?.prUrl ?? ticket.review.prUrl ?? null,
+      mergeState: options?.mergeState ?? ticket.review.mergeState ?? "none",
     };
     if (options?.note?.trim()) {
       ticket.comments.push({
@@ -824,9 +837,110 @@ export class ProjectStore {
       actor,
       ticketId: saved.id,
       cycleId: saved.cycleId ?? undefined,
-      data: { from: fromStatus, to: doneCol.id, requestedBy, note: options?.note?.trim() || null },
+      data: {
+        from: fromStatus,
+        to: doneCol.id,
+        requestedBy,
+        note: options?.note?.trim() || null,
+        ...(saved.review.prNumber ? { prNumber: saved.review.prNumber, merged: saved.review.mergeState === "merged" } : {}),
+      },
     });
     return saved;
+  }
+
+  async approveAndMergeReview(
+    ticketId: string,
+    options?: { note?: string; actor?: string; skipMerge?: boolean },
+  ): Promise<{ ticket: Ticket; status: "merged" | "waiting_ci" | "approved_only"; pr?: PrInfo | null }> {
+    const [config, ticket] = await Promise.all([readConfig(this.root), readTicket(this.root, ticketId)]);
+    const actor = options?.actor?.trim() || config.owner;
+    if (config.reviewGate && isAgentActor(actor)) {
+      throw new TriathlonError("Agents cannot approve their own reviews.", "FORBIDDEN", 403);
+    }
+
+    // Non-code ticket (no branch) or explicit board-only approval
+    if (options?.skipMerge || !ticket.branch) {
+      const saved = await this.approveReview(ticketId, { note: options?.note, actor });
+      return { ticket: saved, status: "approved_only", pr: null };
+    }
+
+    const pr = await inspectPrForBranch(this.root, ticket.branch);
+    if (!pr) {
+      throw new TriathlonError(
+        `No GitHub PR found for branch "${ticket.branch}". Push and open a PR first, or use Approve without merging.`,
+        "PR_NOT_FOUND",
+        409,
+      );
+    }
+
+    if (pr.state === "MERGED") {
+      const saved = await this.approveReview(ticketId, {
+        note: options?.note,
+        actor,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        mergeState: "merged",
+      });
+      return { ticket: saved, status: "merged", pr };
+    }
+
+    if (pr.state === "CLOSED") {
+      throw new TriathlonError(`PR #${pr.number} is closed (not merged).`, "PR_CLOSED", 409);
+    }
+
+    if (pr.checks.overall === "fail") {
+      throw new TriathlonError(
+        `Cannot merge PR #${pr.number} — CI checks failed: ${pr.checks.failedNames.join(", ")}`,
+        "CI_FAILED",
+        409,
+      );
+    }
+
+    if (pr.isDraft) {
+      await markPrReady(this.root, pr.number);
+    }
+
+    // If CI checks are still running, queue auto-merge and let SyncEngine complete it when green
+    if (pr.checks.overall === "pending") {
+      try {
+        await mergePrWithGh(this.root, pr.number, { auto: true });
+      } catch {
+        // Repo may not have GitHub auto-merge enabled; SyncEngine's background watcher will merge once green.
+      }
+      const now = new Date().toISOString();
+      ticket.review = {
+        ...ticket.review,
+        state: "pending",
+        decidedBy: actor,
+        decidedAt: now,
+        note: options?.note?.trim() || null,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        mergeState: "waiting_ci",
+      };
+      if (options?.note?.trim()) {
+        ticket.comments.push({
+          id: randomUUID().slice(0, 8),
+          author: actor,
+          body: `Approved (queued to merge PR #${pr.number} after CI passes): ${options.note.trim()}`,
+          createdAt: now,
+        });
+      }
+      ticket.updatedAt = now;
+      const saved = await writeTicket(this.root, ticket);
+      return { ticket: saved, status: "waiting_ci", pr };
+    }
+
+    // All CI checks passed (or no checks configured) -> squash-merge now!
+    await mergePrWithGh(this.root, pr.number);
+    const saved = await this.approveReview(ticketId, {
+      note: options?.note,
+      actor,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      mergeState: "merged",
+    });
+    return { ticket: saved, status: "merged", pr };
   }
 
   async rejectReview(ticketId: string, input: { note: string; actor?: string }): Promise<Ticket> {

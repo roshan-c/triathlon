@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProjectSnapshot } from "../../core/types.js";
 import { displayActor } from "../../core/types.js";
-import { api, formatRelativeTime } from "../lib/api.js";
+import { ApiError, api, formatRelativeTime, type PrInfo } from "../lib/api.js";
 import {
   AgentGlyph,
   CheckIcon,
@@ -30,6 +30,13 @@ export function ReviewInboxView({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [allowSkipMerge, setAllowSkipMerge] = useState(false);
+  const [prState, setPrState] = useState<{
+    loading: boolean;
+    found: boolean;
+    pr: PrInfo | null;
+    error?: string | null;
+  }>({ loading: false, found: false, pr: null });
 
   useEffect(() => {
     if (initialTicketId) {
@@ -84,7 +91,35 @@ export function ReviewInboxView({
   useEffect(() => {
     setNote("");
     setError(null);
+    setAllowSkipMerge(false);
   }, [selected?.id]);
+
+  const loadPr = useCallback(async () => {
+    if (!selected?.branch) {
+      setPrState({ loading: false, found: false, pr: null });
+      return;
+    }
+    setPrState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const res = await api.getTicketPr(snapshot.projectId, selected.id);
+      setPrState({ loading: false, found: res.found, pr: res.pr, error: res.error ?? null });
+    } catch (err) {
+      setPrState({
+        loading: false,
+        found: false,
+        pr: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [snapshot.projectId, selected?.id, selected?.branch]);
+
+  useEffect(() => {
+    void loadPr();
+  }, [loadPr, selected?.updatedAt]);
+
+  const isWaitingCi = selected?.review.mergeState === "waiting_ci";
+  const isCiFailed =
+    selected?.review.mergeState === "ci_failed" || prState.pr?.checks.overall === "fail";
 
   // Keyboard navigation J/K, A (approve) on desktop
   useEffect(() => {
@@ -95,24 +130,41 @@ export function ReviewInboxView({
         setSelectedId(list[Math.min(list.length - 1, safeIndex + 1)].id);
       } else if (e.key === "k" || e.key === "K") {
         setSelectedId(list[Math.max(0, safeIndex - 1)].id);
-      } else if ((e.key === "a" || e.key === "A") && tab === "waiting" && selected) {
+      } else if (
+        (e.key === "a" || e.key === "A") &&
+        tab === "waiting" &&
+        selected &&
+        !busy &&
+        !isWaitingCi &&
+        !isCiFailed
+      ) {
         e.preventDefault();
         void handleApprove();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [list, safeIndex, selected, tab]);
+  }, [list, safeIndex, selected, tab, busy, isWaitingCi, isCiFailed]);
 
-  const handleApprove = async () => {
+  const handleApprove = async (skipMerge = false) => {
     if (!selected) return;
     setBusy(true);
     setError(null);
+    setAllowSkipMerge(false);
     try {
-      await api.approveReview(snapshot.projectId, selected.id, note.trim() || undefined);
+      const res = await api.approveReview(snapshot.projectId, selected.id, {
+        note: note.trim() || undefined,
+        skipMerge,
+      });
+      if (res.pr) {
+        setPrState({ loading: false, found: true, pr: res.pr, error: null });
+      }
       setNote("");
       await onRefresh();
     } catch (err) {
+      if (err instanceof ApiError && err.code === "PR_NOT_FOUND") {
+        setAllowSkipMerge(true);
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -232,7 +284,21 @@ export function ReviewInboxView({
                     <div className="mb-1 text-[14px] font-semibold md:text-[13px]" style={{ color: "var(--ink)" }}>
                       {ticket.title}
                     </div>
-                    {failedChecks.length > 0 ? (
+                    {ticket.review.mergeState === "ci_failed" ? (
+                      <div
+                        className="flex items-center gap-1.5 text-[12px] font-medium"
+                        style={{ color: "var(--accent)" }}
+                      >
+                        <WarningTriangleIcon size={13} />
+                        <span>
+                          CI failed{ticket.review.prNumber ? ` · PR #${ticket.review.prNumber}` : ""}
+                        </span>
+                      </div>
+                    ) : ticket.review.mergeState === "waiting_ci" ? (
+                      <div className="text-[12px] font-medium" style={{ color: "var(--ink-2)" }}>
+                        Waiting for CI{ticket.review.prNumber ? ` · PR #${ticket.review.prNumber}` : ""}…
+                      </div>
+                    ) : failedChecks.length > 0 ? (
                       <div
                         className="flex items-center gap-1.5 text-[12px] font-medium"
                         style={{ color: "var(--accent)" }}
@@ -390,6 +456,149 @@ export function ReviewInboxView({
                   </div>
                 </div>
 
+                {/* Pull request & CI status */}
+                {(selected.branch || selected.review.prUrl) && (
+                  <div
+                    className="order-2 grid grid-cols-1 gap-2 py-4 md:grid-cols-[150px_1fr] md:gap-6 md:py-5"
+                    style={{ borderColor: "var(--border)" }}
+                  >
+                    <div className="flex items-center justify-between md:block">
+                      <span className="text-[13px] font-semibold">Pull request</span>
+                      <button
+                        type="button"
+                        disabled={prState.loading}
+                        onClick={() => void loadPr()}
+                        className="text-[12px] hover:underline md:mt-1 md:block"
+                        style={{ color: "var(--ink-3)" }}
+                      >
+                        {prState.loading ? "Checking…" : "Refresh CI"}
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-2 text-[13px]">
+                      {selected.review.mergeState === "waiting_ci" && (
+                        <div
+                          className="border-l-2 pl-3 text-[13px] leading-relaxed"
+                          style={{ borderColor: "var(--ink)", color: "var(--ink)" }}
+                        >
+                          Approved · waiting for CI
+                          {selected.review.prNumber ? ` on PR #${selected.review.prNumber}` : ""}. Triathlon will
+                          squash-merge and move this ticket to Done once all checks pass.
+                        </div>
+                      )}
+                      {selected.review.mergeState === "ci_failed" && (
+                        <div
+                          className="border-l-2 pl-3 text-[13px] leading-relaxed"
+                          style={{ borderColor: "var(--accent)", color: "var(--accent)" }}
+                        >
+                          CI failed{selected.review.prNumber ? ` on PR #${selected.review.prNumber}` : ""} — auto-merge
+                          paused. Fix the failing checks or send back to the agent.
+                        </div>
+                      )}
+
+                      {prState.loading && !prState.pr ? (
+                        <div className="text-[12px]" style={{ color: "var(--ink-3)" }}>
+                          Checking GitHub PR for <code>{selected.branch}</code>…
+                        </div>
+                      ) : prState.pr ? (
+                        <>
+                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                            <a
+                              href={prState.pr.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-semibold hover:underline"
+                              style={{ color: "var(--ink)" }}
+                            >
+                              PR #{prState.pr.number}
+                            </a>
+                            <span className="text-[12px]" style={{ color: "var(--ink-3)" }}>
+                              {prState.pr.isDraft
+                                ? "Draft"
+                                : prState.pr.state === "MERGED"
+                                  ? "Merged"
+                                  : prState.pr.state === "CLOSED"
+                                    ? "Closed"
+                                    : "Open"}
+                              {" · "}
+                              {prState.pr.checks.overall === "pass"
+                                ? `All ${prState.pr.checks.total} checks passed`
+                                : prState.pr.checks.overall === "pending"
+                                  ? `${prState.pr.checks.pending} of ${prState.pr.checks.total} checks running…`
+                                  : prState.pr.checks.overall === "fail"
+                                    ? `${prState.pr.checks.failed} of ${prState.pr.checks.total} checks failed`
+                                    : "No CI checks"}
+                            </span>
+                          </div>
+                          {prState.pr.checks.items.length > 0 && (
+                            <div className="mt-1 flex flex-col gap-1.5">
+                              {prState.pr.checks.items.map((item) => (
+                                <div key={item.name} className="flex items-center justify-between gap-3 text-[12px]">
+                                  <span className="flex min-w-0 items-center gap-2">
+                                    <span
+                                      style={{
+                                        color:
+                                          item.state === "pass"
+                                            ? "var(--done)"
+                                            : item.state === "fail"
+                                              ? "var(--accent)"
+                                              : "var(--ink-3)",
+                                      }}
+                                    >
+                                      {item.state === "pass" ? (
+                                        <CheckIcon size={12} />
+                                      ) : item.state === "fail" ? (
+                                        <WarningTriangleIcon size={12} />
+                                      ) : (
+                                        "◦"
+                                      )}
+                                    </span>
+                                    {item.url ? (
+                                      <a
+                                        href={item.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="truncate font-mono hover:underline"
+                                        style={{ color: "var(--ink)" }}
+                                      >
+                                        {item.name}
+                                      </a>
+                                    ) : (
+                                      <span className="truncate font-mono" style={{ color: "var(--ink)" }}>
+                                        {item.name}
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="shrink-0" style={{ color: "var(--ink-3)" }}>
+                                    {item.state === "pass" ? "passed" : item.state === "fail" ? "failed" : "running"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : selected.review.prUrl ? (
+                        <div>
+                          <a
+                            href={selected.review.prUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold hover:underline"
+                            style={{ color: "var(--ink)" }}
+                          >
+                            PR #{selected.review.prNumber ?? ""}
+                          </a>
+                        </div>
+                      ) : (
+                        <div className="text-[12px]" style={{ color: "var(--ink-3)" }}>
+                          {prState.error
+                            ? `Could not query GitHub PR: ${prState.error}`
+                            : `No GitHub PR found for branch ${selected.branch}.`}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Needs your call */}
                 {selected.review.question && (
                   <div
@@ -531,8 +740,19 @@ export function ReviewInboxView({
                 style={{ background: "var(--bg-paper)", borderColor: "var(--border)" }}
               >
                 {error && (
-                  <div className="mb-2 text-[12px] font-medium" style={{ color: "var(--accent)" }}>
-                    {error}
+                  <div className="mb-2 flex flex-wrap items-center gap-3 text-[12px] font-medium" style={{ color: "var(--accent)" }}>
+                    <span>{error}</span>
+                    {allowSkipMerge && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void handleApprove(true)}
+                        className="underline"
+                        style={{ color: "var(--ink)" }}
+                      >
+                        Approve without merging
+                      </button>
+                    )}
                   </div>
                 )}
                 {selected.t3ThreadId && (
@@ -564,13 +784,23 @@ export function ReviewInboxView({
                     </button>
                     <button
                       type="button"
-                      disabled={busy}
-                      onClick={handleApprove}
-                      className="flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[14px] font-semibold md:min-h-[38px] md:flex-none md:rounded-md md:text-[13px]"
+                      disabled={busy || isWaitingCi || isCiFailed}
+                      onClick={() => void handleApprove(false)}
+                      className="flex min-h-[44px] flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[14px] font-semibold disabled:opacity-50 md:min-h-[38px] md:flex-none md:rounded-md md:text-[13px]"
                       style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
                     >
                       <CheckIcon size={15} />
-                      <span>Approve and merge</span>
+                      <span>
+                        {isWaitingCi
+                          ? "Waiting for CI…"
+                          : isCiFailed
+                            ? "CI failing"
+                            : !selected.branch
+                              ? "Approve → Done"
+                              : prState.pr?.checks.overall === "pending"
+                                ? "Approve & merge when CI passes"
+                                : "Approve and merge"}
+                      </span>
                     </button>
                   </div>
                 </div>

@@ -8,6 +8,7 @@ import {
   exportMetricsCsv,
   exportMetricsMarkdown,
 } from "../core/metrics.js";
+import { inspectPrForBranch } from "../core/github.js";
 import { initProject, ProjectStore } from "../core/project.js";
 import {
   readRegistry,
@@ -358,12 +359,34 @@ export function createApp(options?: {
     return c.json(ticket);
   });
 
+  app.get("/api/projects/:projectId/tickets/:ticketId/pr", async (c) => {
+    const store = await storeForParam(c.req.param("projectId"));
+    const ticket = await store.getTicket(c.req.param("ticketId"));
+    if (!ticket.branch) {
+      return c.json({ found: false, pr: null });
+    }
+    try {
+      const pr = await inspectPrForBranch(store.root, ticket.branch);
+      return c.json({ found: Boolean(pr), pr });
+    } catch (err) {
+      return c.json({
+        found: false,
+        pr: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
   app.post("/api/projects/:projectId/tickets/:ticketId/review/approve", async (c) => {
     const store = await storeForParam(c.req.param("projectId"));
-    const body = (await c.req.json().catch(() => ({}))) as { note?: string; actor?: string };
-    const ticket = await store.approveReview(c.req.param("ticketId"), body);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      note?: string;
+      actor?: string;
+      skipMerge?: boolean;
+    };
+    const result = await store.approveAndMergeReview(c.req.param("ticketId"), body);
     await sync.publishProjectChange(store.projectId, store.root);
-    return c.json(ticket);
+    return c.json(result);
   });
 
   app.post("/api/projects/:projectId/tickets/:ticketId/review/reject", async (c) => {

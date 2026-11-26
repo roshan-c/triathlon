@@ -9,6 +9,18 @@ import type {
   ThemePreference,
   Ticket,
 } from "../../core/types.js";
+import type { PrInfo } from "../../core/github.js";
+
+export type { PrInfo };
+
+export class ApiError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+  }
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -20,13 +32,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
+    let code: string | undefined;
     try {
-      const data = (await res.json()) as { error?: string };
+      const data = (await res.json()) as { error?: string; code?: string };
       if (data.error) message = data.error;
+      if (data.code) code = data.code;
     } catch {
       // keep status text
     }
-    throw new Error(message);
+    throw new ApiError(message, code);
   }
   return (await res.json()) as T;
 }
@@ -190,11 +204,26 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
     ),
 
-  approveReview: (projectId: string, ticketId: string, note?: string) =>
-    request<Ticket>(
-      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/review/approve`,
-      { method: "POST", body: JSON.stringify({ note }) },
+  getTicketPr: (projectId: string, ticketId: string) =>
+    request<{ found: boolean; pr: PrInfo | null; error?: string }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/pr`,
     ),
+
+  approveReview: (
+    projectId: string,
+    ticketId: string,
+    options?: string | { note?: string; skipMerge?: boolean },
+  ) => {
+    const body = typeof options === "string" ? { note: options } : (options ?? {});
+    return request<{
+      ticket: Ticket;
+      status: "merged" | "waiting_ci" | "approved_only";
+      pr: PrInfo | null;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/review/approve`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
 
   rejectReview: (projectId: string, ticketId: string, note: string) =>
     request<Ticket>(

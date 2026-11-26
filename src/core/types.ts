@@ -52,6 +52,8 @@ export interface ReviewCheck {
   detail?: string;
 }
 
+export type MergeState = "none" | "waiting_ci" | "merged" | "ci_failed";
+
 export interface ReviewPacket {
   state: ReviewState;
   requestedBy?: string | null;
@@ -63,6 +65,9 @@ export interface ReviewPacket {
   filesChanged?: ReviewFileChange[];
   checks?: ReviewCheck[];
   note?: string | null;
+  prNumber?: number | null;
+  prUrl?: string | null;
+  mergeState?: MergeState;
 }
 
 export interface Ticket {
