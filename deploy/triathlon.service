@@ -1,0 +1,14 @@
+[Unit]
+Description=Triathlon local workbench (behind Tailscale Serve)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/roshan/.local/bin/node /home/roshan/triathlon/dist/cli/index.js serve --host 127.0.0.1 --port 4177 --no-open --allow-tailscale-user roshan-c@github
+Restart=on-failure
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=PATH=/home/roshan/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

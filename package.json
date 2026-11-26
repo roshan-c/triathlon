@@ -1,40 +1,69 @@
 {
   "name": "triathlon",
-  "version": "0.1.0",
-  "description": "A Git-native board for small teams",
+  "version": "2.0.0",
+  "description": "Local-first, Markdown-backed work tracker for solo developers and coding agents",
   "type": "module",
   "bin": {
-    "triathlon": "bin/triathlon.js",
-    "tri": "bin/triathlon.js"
+    "triathlon": "dist/cli/index.js",
+    "tri": "dist/cli/index.js"
   },
   "files": [
-    "bin",
-    "lib",
-    "ui",
-    "schema",
-    "templates",
+    "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "board": "node ./bin/triathlon.js serve",
-    "board:init": "node ./bin/triathlon.js init",
-    "board:render": "node ./bin/triathlon.js render",
-    "board:validate": "node ./bin/triathlon.js validate",
-    "board:metrics": "node ./bin/triathlon.js metrics",
-    "board:check": "node ./bin/triathlon.js validate && node ./bin/triathlon.js render --check",
-    "test": "node --test",
-    "typecheck": "node --check ./bin/triathlon.js && node --check ./lib/board.js && node --check ./lib/history.js && node --check ./lib/scaffold.js && node --check ./lib/server.js && node --check ./lib/template.js",
-    "prepublishOnly": "npm test && npm run board:check"
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.json && chmod +x dist/cli/index.js",
+    "build:web": "vite build",
+    "dev:web": "vite",
+    "dev:server": "tsx src/cli/index.ts serve --no-open",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=22"
   },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "chokidar": "^4.0.3",
+    "commander": "^13.1.0",
+    "gray-matter": "^4.0.3",
+    "hono": "^4.7.0",
+    "js-yaml": "^4.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@tailwindcss/vite": "^4.1.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.1.4"
+  },
   "keywords": [
     "kanban",
-    "github",
+    "markdown",
+    "mcp",
+    "ai-agents",
     "project-management",
-    "sprint"
+    "agile",
+    "metrics"
   ],
   "license": "MIT"
 }

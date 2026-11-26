@@ -1,8 +1,6 @@
 node_modules/
-.DS_Store
-.env
-.env.*
+dist/
 coverage/
-metrics.html
-*.tgz
-/JOURNEY.md
+*.tmp
+.DS_Store
+design/
