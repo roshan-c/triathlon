@@ -167,11 +167,21 @@ export async function inspectPrForBranch(projectRoot: string, branch: string): P
 export async function mergePrWithGh(
   projectRoot: string,
   prNumber: number,
-  options?: { auto?: boolean },
+  options?: { auto?: boolean; branch?: string },
 ): Promise<void> {
-  const args = ["pr", "merge", String(prNumber), "--squash", "--delete-branch"];
+  // Never pass --delete-branch to `gh pr merge`: it tries to delete the local branch and
+  // checkout main, which fails whenever a git worktree (e.g. a T3 Code thread) holds that branch.
+  const args = ["pr", "merge", String(prNumber), "--squash"];
   if (options?.auto) args.push("--auto");
   await runGh(args, projectRoot);
+
+  // Best-effort remote branch cleanup (no-op if GitHub already auto-deleted it)
+  if (!options?.auto && options?.branch) {
+    await execFileAsync("git", ["push", "origin", "--delete", options.branch], {
+      cwd: projectRoot,
+      maxBuffer: 1024 * 1024,
+    }).catch(() => {});
+  }
 }
 
 export async function markPrReady(projectRoot: string, prNumber: number): Promise<void> {

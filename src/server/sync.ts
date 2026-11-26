@@ -327,7 +327,7 @@ export class SyncEngine extends EventEmitter {
               continue;
             }
             if (pr.checks.overall === "pass" || pr.checks.overall === "none") {
-              await mergePrWithGh(proj.path, pr.number);
+              await mergePrWithGh(proj.path, pr.number, { branch: ticket.branch });
               await store.approveReview(ticket.id, {
                 actor: ticket.review.decidedBy ?? undefined,
                 prNumber: pr.number,

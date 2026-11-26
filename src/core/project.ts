@@ -932,7 +932,7 @@ export class ProjectStore {
     }
 
     // All CI checks passed (or no checks configured) -> squash-merge now!
-    await mergePrWithGh(this.root, pr.number);
+    await mergePrWithGh(this.root, pr.number, { branch: ticket.branch });
     const saved = await this.approveReview(ticketId, {
       note: options?.note,
       actor,
