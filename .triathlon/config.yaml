@@ -1,0 +1,28 @@
+schemaVersion: 2
+key: TRI
+name: triathlon
+description: ''
+owner: Roshan
+nextTicketNumber: 8
+reviewGate: true
+columns:
+  - id: backlog
+    name: Backlog
+    category: backlog
+    wipLimit: null
+  - id: todo
+    name: Todo
+    category: todo
+    wipLimit: null
+  - id: in-progress
+    name: In progress
+    category: started
+    wipLimit: 3
+  - id: in-review
+    name: In review
+    category: review
+    wipLimit: 3
+  - id: done
+    name: Done
+    category: done
+    wipLimit: null
