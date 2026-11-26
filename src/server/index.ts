@@ -61,6 +61,9 @@ export async function startServer(options?: {
 
   const close = async () => {
     await watcher.close();
+    if ("closeAllConnections" in server && typeof server.closeAllConnections === "function") {
+      server.closeAllConnections();
+    }
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
   };
 
