@@ -6,6 +6,9 @@ import { resolve } from "node:path";
 export default defineConfig({
   root: resolve(import.meta.dirname, "src/web"),
   plugins: [react(), tailwindcss()],
+  worker: {
+    format: "es",
+  },
   build: {
     outDir: resolve(import.meta.dirname, "dist/web"),
     emptyOutDir: true,

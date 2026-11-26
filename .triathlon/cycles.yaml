@@ -1,0 +1,49 @@
+nextCycleNumber: 2
+cycles:
+  - id: cycle-1
+    number: 1
+    name: Cycle 1 — Workflow & Review Polish
+    goal: Eliminate manual friction between T3 Code agents, GitHub PRs, and mobile review.
+    state: active
+    startDate: '2026-11-26'
+    endDate: '2026-12-10'
+    actualStart: '2026-11-26T19:18:35.547Z'
+    actualEnd: null
+    initialPoints: 0
+    scopeChanges:
+      - at: '2026-11-26T19:18:35.555Z'
+        ticketId: TRI-1
+        action: added
+        points: 2
+        actor: Roshan
+      - at: '2026-11-26T19:18:35.589Z'
+        ticketId: TRI-2
+        action: added
+        points: 2
+        actor: Roshan
+      - at: '2026-11-26T19:18:35.607Z'
+        ticketId: TRI-3
+        action: added
+        points: 3
+        actor: Roshan
+      - at: '2026-11-26T19:18:35.623Z'
+        ticketId: TRI-4
+        action: added
+        points: 3
+        actor: Roshan
+      - at: '2026-11-26T19:18:35.640Z'
+        ticketId: TRI-5
+        action: added
+        points: 2
+        actor: Roshan
+      - at: '2026-11-26T19:18:35.657Z'
+        ticketId: TRI-6
+        action: added
+        points: 3
+        actor: Roshan
+      - at: '2026-11-26T19:18:35.672Z'
+        ticketId: TRI-7
+        action: added
+        points: 2
+        actor: Roshan
+    snapshot: null

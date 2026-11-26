@@ -8,7 +8,7 @@ import {
   exportMetricsCsv,
   exportMetricsMarkdown,
 } from "../core/metrics.js";
-import { inspectPrForBranch } from "../core/github.js";
+import { getPrDiffForBranch, inspectPrForBranch, rerunFailedCiForPr } from "../core/github.js";
 import { initProject, ProjectStore } from "../core/project.js";
 import {
   readRegistry,
@@ -375,6 +375,43 @@ export function createApp(options?: {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  app.get("/api/projects/:projectId/tickets/:ticketId/pr/diff", async (c) => {
+    const store = await storeForParam(c.req.param("projectId"));
+    const ticket = await store.getTicket(c.req.param("ticketId"));
+    if (!ticket.branch) {
+      return c.json({ source: null, patch: "" });
+    }
+    const diff = await getPrDiffForBranch(store.root, ticket.branch);
+    return c.json(diff);
+  });
+
+  app.post("/api/projects/:projectId/tickets/:ticketId/pr/rerun-ci", async (c) => {
+    const store = await storeForParam(c.req.param("projectId"));
+    const ticket = await store.getTicket(c.req.param("ticketId"));
+    if (!ticket.branch) {
+      throw new TriathlonError("Ticket has no branch.", "NO_BRANCH", 400);
+    }
+    const result = await rerunFailedCiForPr(store.root, ticket.branch);
+    await store.addComment(
+      ticket.id,
+      `Re-ran failed CI workflow runs on PR #${result.prNumber} (${result.rerunRunIds.join(", ")}).`,
+    );
+    await sync.publishProjectChange(store.projectId, store.root);
+    return c.json(result);
+  });
+
+  app.post("/api/projects/:projectId/tickets/:ticketId/pr/rebase", async (c) => {
+    const store = await storeForParam(c.req.param("projectId"));
+    const ticket = await store.getTicket(c.req.param("ticketId"));
+    if (!ticket.branch) {
+      throw new TriathlonError("Ticket has no branch.", "NO_BRANCH", 400);
+    }
+    const note = `Please rebase branch \`${ticket.branch}\` onto the latest \`origin/main\`, resolve any merge conflicts, push the updated branch, verify checks pass, and re-submit for review.`;
+    const updated = await store.rejectReview(ticket.id, { note });
+    await sync.publishProjectChange(store.projectId, store.root);
+    return c.json(updated);
   });
 
   app.post("/api/projects/:projectId/tickets/:ticketId/review/approve", async (c) => {

@@ -27,6 +27,7 @@ export interface PrInfo {
   title: string;
   state: "OPEN" | "MERGED" | "CLOSED";
   isDraft: boolean;
+  mergeable?: string;
   mergeStateStatus: string;
   checks: PrCheckSummary;
 }
@@ -136,7 +137,7 @@ async function runGh(args: string[], cwd: string): Promise<string> {
 }
 
 export async function inspectPrForBranch(projectRoot: string, branch: string): Promise<PrInfo | null> {
-  const fields = "number,url,title,state,isDraft,mergeStateStatus,statusCheckRollup";
+  const fields = "number,url,title,state,isDraft,mergeable,mergeStateStatus,statusCheckRollup";
   const raw = await runGh(
     ["pr", "list", "--head", branch, "--state", "all", "--limit", "5", "--json", fields],
     projectRoot,
@@ -147,6 +148,7 @@ export async function inspectPrForBranch(projectRoot: string, branch: string): P
     title: string;
     state: "OPEN" | "MERGED" | "CLOSED";
     isDraft: boolean;
+    mergeable?: string;
     mergeStateStatus: string;
     statusCheckRollup?: RawCheckNode[];
   }[];
@@ -159,9 +161,76 @@ export async function inspectPrForBranch(projectRoot: string, branch: string): P
     title: chosen.title,
     state: chosen.state,
     isDraft: Boolean(chosen.isDraft),
+    mergeable: chosen.mergeable ?? "UNKNOWN",
     mergeStateStatus: chosen.mergeStateStatus ?? "UNKNOWN",
     checks: summarizeChecks(chosen.statusCheckRollup),
   };
+}
+
+export async function getPrDiffForBranch(
+  projectRoot: string,
+  branch: string,
+): Promise<{ source: "pr" | "git"; prNumber?: number; patch: string }> {
+  try {
+    const pr = await inspectPrForBranch(projectRoot, branch);
+    if (pr) {
+      const { stdout } = await execFileAsync("gh", ["pr", "diff", String(pr.number)], {
+        cwd: projectRoot,
+        maxBuffer: 15 * 1024 * 1024,
+      });
+      return { source: "pr", prNumber: pr.number, patch: stdout };
+    }
+  } catch {
+    // Fall back to local git diff
+  }
+
+  for (const base of ["origin/main", "main", "origin/master", "master"]) {
+    try {
+      const { stdout } = await execFileAsync("git", ["diff", `${base}...${branch}`], {
+        cwd: projectRoot,
+        maxBuffer: 15 * 1024 * 1024,
+      });
+      return { source: "git", patch: stdout };
+    } catch {
+      // Try next base ref
+    }
+  }
+  throw new TriathlonError(`Could not load diff for branch "${branch}".`, "DIFF_ERROR", 404);
+}
+
+export async function rerunFailedCiForPr(
+  projectRoot: string,
+  branch: string,
+): Promise<{ prNumber: number; rerunRunIds: number[] }> {
+  const pr = await inspectPrForBranch(projectRoot, branch);
+  if (!pr) {
+    throw new TriathlonError(`No GitHub PR found for branch "${branch}".`, "PR_NOT_FOUND", 404);
+  }
+  const raw = await runGh(
+    ["run", "list", "--branch", branch, "--limit", "10", "--json", "databaseId,conclusion,status"],
+    projectRoot,
+  );
+  const runs = JSON.parse(raw || "[]") as {
+    databaseId: number;
+    conclusion?: string | null;
+    status?: string;
+  }[];
+  const failed = runs.filter(
+    (r) => r.conclusion === "failure" || r.conclusion === "timed_out" || r.conclusion === "cancelled",
+  );
+  if (!failed.length) {
+    throw new TriathlonError(
+      `No failed GitHub Actions runs found on branch "${branch}" to re-run.`,
+      "NO_FAILED_RUNS",
+      409,
+    );
+  }
+  const rerunRunIds: number[] = [];
+  for (const run of failed) {
+    await runGh(["run", "rerun", String(run.databaseId), "--failed"], projectRoot);
+    rerunRunIds.push(run.databaseId);
+  }
+  return { prNumber: pr.number, rerunRunIds };
 }
 
 export async function mergePrWithGh(

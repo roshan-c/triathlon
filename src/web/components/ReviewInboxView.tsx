@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProjectSnapshot } from "../../core/types.js";
 import { displayActor } from "../../core/types.js";
 import { ApiError, api, formatRelativeTime, type PrInfo } from "../lib/api.js";
+import { PrDiffViewer } from "./PrDiffViewer.js";
 import {
   AgentGlyph,
   CheckIcon,
@@ -37,6 +38,16 @@ export function ReviewInboxView({
     pr: PrInfo | null;
     error?: string | null;
   }>({ loading: false, found: false, pr: null });
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffState, setDiffState] = useState<{
+    loading: boolean;
+    loaded: boolean;
+    source: "pr" | "git" | null;
+    prNumber?: number;
+    patch: string;
+    error?: string | null;
+  }>({ loading: false, loaded: false, source: null, patch: "" });
+  const [prActionMessage, setPrActionMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialTicketId) {
@@ -92,7 +103,68 @@ export function ReviewInboxView({
     setNote("");
     setError(null);
     setAllowSkipMerge(false);
+    setPrActionMessage(null);
+    setDiffOpen(false);
+    setDiffState({ loading: false, loaded: false, source: null, patch: "" });
   }, [selected?.id]);
+
+  const loadDiff = useCallback(async () => {
+    if (!selected?.branch) return;
+    setDiffOpen(true);
+    setDiffState((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const res = await api.getTicketPrDiff(snapshot.projectId, selected.id);
+      setDiffState({
+        loading: false,
+        loaded: true,
+        source: res.source,
+        prNumber: res.prNumber,
+        patch: res.patch,
+        error: null,
+      });
+    } catch (err) {
+      setDiffState({
+        loading: false,
+        loaded: true,
+        source: null,
+        patch: "",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [snapshot.projectId, selected?.id, selected?.branch]);
+
+  const handleRerunCi = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    setPrActionMessage(null);
+    try {
+      const res = await api.rerunTicketCi(snapshot.projectId, selected.id);
+      setPrActionMessage(`Re-triggered ${res.rerunRunIds.length} failed CI run(s) on PR #${res.prNumber}.`);
+      await loadPr();
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestRebase = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    setPrActionMessage(null);
+    try {
+      await api.requestTicketRebase(snapshot.projectId, selected.id);
+      setPrActionMessage("Sent rebase request back to the agent.");
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const loadPr = useCallback(async () => {
     if (!selected?.branch) {
@@ -495,6 +567,25 @@ export function ReviewInboxView({
                         </div>
                       )}
 
+                      {prState.pr &&
+                        (prState.pr.mergeable === "CONFLICTING" ||
+                          prState.pr.mergeStateStatus === "DIRTY" ||
+                          prState.pr.mergeStateStatus === "BEHIND") && (
+                          <div
+                            className="border-l-2 pl-3 text-[13px] leading-relaxed"
+                            style={{ borderColor: "var(--accent)", color: "var(--accent)" }}
+                          >
+                            {prState.pr.mergeable === "CONFLICTING" || prState.pr.mergeStateStatus === "DIRTY"
+                              ? `PR #${prState.pr.number} has merge conflicts with main.`
+                              : `PR #${prState.pr.number} is behind main and needs a rebase.`}
+                          </div>
+                        )}
+                      {prActionMessage && (
+                        <div className="text-[12px] font-medium" style={{ color: "var(--done)" }}>
+                          {prActionMessage}
+                        </div>
+                      )}
+
                       {prState.loading && !prState.pr ? (
                         <div className="text-[12px]" style={{ color: "var(--ink-3)" }}>
                           Checking GitHub PR for <code>{selected.branch}</code>…
@@ -575,6 +666,50 @@ export function ReviewInboxView({
                               ))}
                             </div>
                           )}
+                          {/* Quick PR actions: View diff, Re-run failed CI, Rebase */}
+                          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[12px]">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (diffOpen) setDiffOpen(false);
+                                else if (diffState.loaded) setDiffOpen(true);
+                                else void loadDiff();
+                              }}
+                              className="min-h-[32px] font-medium hover:underline"
+                              style={{ color: "var(--ink)" }}
+                            >
+                              {diffOpen ? "Hide diff" : diffState.loading ? "Loading diff…" : "View diff"}
+                            </button>
+                            {(prState.pr.checks.overall === "fail" || selected.review.mergeState === "ci_failed") && (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleRerunCi()}
+                                className="min-h-[32px] font-medium hover:underline disabled:opacity-50"
+                                style={{ color: "var(--accent)" }}
+                              >
+                                Re-run failed CI
+                              </button>
+                            )}
+                            {tab === "waiting" && prState.pr.state === "OPEN" && (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleRequestRebase()}
+                                className="min-h-[32px] font-medium hover:underline disabled:opacity-50"
+                                style={{
+                                  color:
+                                    prState.pr.mergeable === "CONFLICTING" ||
+                                    prState.pr.mergeStateStatus === "DIRTY" ||
+                                    prState.pr.mergeStateStatus === "BEHIND"
+                                      ? "var(--accent)"
+                                      : "var(--ink-2)",
+                                }}
+                              >
+                                Ask agent to rebase on main
+                              </button>
+                            )}
+                          </div>
                         </>
                       ) : selected.review.prUrl ? (
                         <div>
@@ -589,13 +724,48 @@ export function ReviewInboxView({
                           </a>
                         </div>
                       ) : (
-                        <div className="text-[12px]" style={{ color: "var(--ink-3)" }}>
-                          {prState.error
-                            ? `Could not query GitHub PR: ${prState.error}`
-                            : `No GitHub PR found for branch ${selected.branch}.`}
+                        <div className="flex flex-wrap items-center gap-3 text-[12px]" style={{ color: "var(--ink-3)" }}>
+                          <span>
+                            {prState.error
+                              ? `Could not query GitHub PR: ${prState.error}`
+                              : `No GitHub PR found for branch ${selected.branch}.`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (diffOpen) setDiffOpen(false);
+                              else if (diffState.loaded) setDiffOpen(true);
+                              else void loadDiff();
+                            }}
+                            className="font-medium hover:underline"
+                            style={{ color: "var(--ink)" }}
+                          >
+                            {diffOpen ? "Hide diff" : "View local diff"}
+                          </button>
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {/* Collapsible full-width @pierre/diffs viewer */}
+                {selected.branch && diffOpen && (
+                  <div className="order-2 py-4 md:py-5" style={{ borderColor: "var(--border)" }}>
+                    {diffState.loading ? (
+                      <div className="py-4 text-[12px]" style={{ color: "var(--ink-3)" }}>
+                        Loading diff…
+                      </div>
+                    ) : diffState.error ? (
+                      <div className="py-2 text-[12px] font-medium" style={{ color: "var(--accent)" }}>
+                        {diffState.error}
+                      </div>
+                    ) : (
+                      <PrDiffViewer
+                        patch={diffState.patch}
+                        source={diffState.source}
+                        prNumber={diffState.prNumber}
+                      />
+                    )}
                   </div>
                 )}
 

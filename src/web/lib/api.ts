@@ -209,6 +209,23 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/pr`,
     ),
 
+  getTicketPrDiff: (projectId: string, ticketId: string) =>
+    request<{ source: "pr" | "git" | null; prNumber?: number; patch: string }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/pr/diff`,
+    ),
+
+  rerunTicketCi: (projectId: string, ticketId: string) =>
+    request<{ prNumber: number; rerunRunIds: number[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/pr/rerun-ci`,
+      { method: "POST" },
+    ),
+
+  requestTicketRebase: (projectId: string, ticketId: string) =>
+    request<Ticket>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/pr/rebase`,
+      { method: "POST" },
+    ),
+
   approveReview: (
     projectId: string,
     ticketId: string,
