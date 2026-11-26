@@ -17,10 +17,10 @@ import {
   updateRegistryPrefs,
 } from "../core/registry.js";
 import { getT3ThreadStatus, launchTicketInT3 } from "../core/t3.js";
-import { configPath, pathExists, readAllTickets, readConfig, readCycles } from "../core/storage.js";
+import { configPath, pathExists, readConfig } from "../core/storage.js";
 import type { ProjectSummary, T3Settings, ThemePreference } from "../core/types.js";
 import { TriathlonError } from "../core/types.js";
-import { type LiveUpdateEvent, ProjectWatcher } from "./watcher.js";
+import { buildProjectSummaries, SyncEngine, type SyncFrame } from "./sync.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -34,67 +34,6 @@ const MIME: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-async function buildProjectSummaries(): Promise<{
-  theme: ThemePreference;
-  lastProjectId: string | null;
-  projects: ProjectSummary[];
-}> {
-  const registry = await readRegistry();
-  const summaries: ProjectSummary[] = await Promise.all(
-    registry.projects.map(async (proj) => {
-      const exists = await pathExists(configPath(proj.path));
-      if (!exists) {
-        return {
-          ...proj,
-          exists: false,
-          reviewWaitingCount: 0,
-          backlogCount: 0,
-          activeCycleName: null,
-        };
-      }
-      try {
-        const [config, tickets, cyclesFile] = await Promise.all([
-          readConfig(proj.path),
-          readAllTickets(proj.path),
-          readCycles(proj.path),
-        ]);
-        const reviewColIds = new Set(config.columns.filter((c) => c.category === "review").map((c) => c.id));
-        const backlogColIds = new Set(config.columns.filter((c) => c.category === "backlog").map((c) => c.id));
-        const reviewWaitingCount = tickets.filter(
-          (t) => t.triage === "accepted" && (reviewColIds.has(t.status) || t.review.state === "pending"),
-        ).length;
-        const backlogCount = tickets.filter(
-          (t) => t.triage === "proposed" || (t.triage === "accepted" && backlogColIds.has(t.status)),
-        ).length;
-        const activeCycle = cyclesFile.cycles.find((c) => c.state === "active");
-        return {
-          ...proj,
-          key: config.key,
-          name: config.name,
-          exists: true,
-          reviewWaitingCount,
-          backlogCount,
-          activeCycleName: activeCycle ? `Cycle ${activeCycle.number} · ${activeCycle.name}` : null,
-        };
-      } catch {
-        return {
-          ...proj,
-          exists: false,
-          reviewWaitingCount: 0,
-          backlogCount: 0,
-          activeCycleName: null,
-        };
-      }
-    }),
-  );
-
-  return {
-    theme: registry.theme,
-    lastProjectId: registry.lastProjectId,
-    projects: summaries,
-  };
-}
-
 async function storeForParam(projectId: string): Promise<ProjectStore> {
   const found = await resolveRegisteredProject(projectId);
   if (!found) {
@@ -104,11 +43,11 @@ async function storeForParam(projectId: string): Promise<ProjectStore> {
 }
 
 export function createApp(options?: {
-  watcher?: ProjectWatcher;
+  sync?: SyncEngine;
   webDistDir?: string;
   allowedTailscaleUsers?: string[];
 }) {
-  const watcher = options?.watcher ?? new ProjectWatcher();
+  const sync = options?.sync ?? new SyncEngine();
   const webDistDir = options?.webDistDir ?? resolve(import.meta.dirname, "../web");
   const allowedUsers = new Set(
     (options?.allowedTailscaleUsers ?? [])
@@ -158,29 +97,80 @@ export function createApp(options?: {
     return c.json({ error: message, code: "INTERNAL_ERROR" }, 500);
   });
 
-  // Live SSE stream for file/API updates across all projects
-  app.get("/api/events", (c) => {
+  // Linear-style live sync stream (monotonic seq, catch-up on reconnect, anti-buffering headers)
+  app.get("/api/sync", (c) => {
+    const since = Number(c.req.query("since") ?? "0") || 0;
+    const requestedProjectId = c.req.query("projectId") || null;
+
+    c.header("Cache-Control", "no-cache, no-transform");
+    c.header("X-Accel-Buffering", "no");
+    c.header("Connection", "keep-alive");
+
     return streamSSE(c, async (stream) => {
-      const onUpdate = (ev: LiveUpdateEvent) => {
+      sync.onClientConnected();
+
+      const sendFrame = (frame: SyncFrame) => {
         void stream.writeSSE({
-          event: "board-update",
-          data: JSON.stringify(ev),
+          id: String(frame.seq),
+          event: "sync",
+          data: JSON.stringify(frame),
         });
       };
-      watcher.on("update", onUpdate);
-      await stream.writeSSE({
-        event: "connected",
-        data: JSON.stringify({ at: new Date().toISOString() }),
-      });
+
+      const { frames, needsResync } = sync.getFramesSince(since);
+      if (needsResync) {
+        const projectsPayload = await buildProjectSummaries();
+        sync.syncProjectWatchers(projectsPayload.projects.filter((p) => p.exists));
+        const activeId =
+          (requestedProjectId && projectsPayload.projects.find((p) => p.id === requestedProjectId && p.exists)?.id) ??
+          (projectsPayload.lastProjectId &&
+            projectsPayload.projects.find((p) => p.id === projectsPayload.lastProjectId && p.exists)?.id) ??
+          projectsPayload.projects.find((p) => p.exists)?.id ??
+          null;
+
+        let initialSnapshot = null;
+        let initialT3Status = {};
+        if (activeId) {
+          const found = projectsPayload.projects.find((p) => p.id === activeId);
+          if (found) {
+            initialSnapshot = await new ProjectStore(found.path).getSnapshot();
+            initialT3Status = sync.getCachedT3Status(activeId);
+          }
+        }
+
+        await stream.writeSSE({
+          id: String(sync.currentSeq),
+          event: "sync_init",
+          data: JSON.stringify({
+            seq: sync.currentSeq,
+            at: new Date().toISOString(),
+            projects: projectsPayload,
+            snapshot: initialSnapshot,
+            t3Status: initialT3Status,
+          }),
+        });
+      } else {
+        await stream.writeSSE({
+          id: String(sync.currentSeq),
+          event: "sync_ready",
+          data: JSON.stringify({ seq: sync.currentSeq, at: new Date().toISOString() }),
+        });
+        for (const frame of frames) {
+          sendFrame(frame);
+        }
+      }
+
+      sync.on("frame", sendFrame);
 
       const keepAlive = setInterval(() => {
-        void stream.writeSSE({ event: "ping", data: "{}" });
-      }, 25_000);
+        void stream.writeSSE({ event: "ping", data: JSON.stringify({ seq: sync.currentSeq }) });
+      }, 15_000);
 
       await new Promise<void>((resolveDone) => {
         stream.onAbort(() => {
           clearInterval(keepAlive);
-          watcher.off("update", onUpdate);
+          sync.off("frame", sendFrame);
+          sync.onClientDisconnected();
           resolveDone();
         });
       });
@@ -190,7 +180,7 @@ export function createApp(options?: {
   // Registry & preferences
   app.get("/api/projects", async (c) => {
     const data = await buildProjectSummaries();
-    watcher.syncProjects(data.projects.filter((p) => p.exists));
+    sync.syncProjectWatchers(data.projects.filter((p) => p.exists));
     return c.json(data);
   });
 
@@ -232,16 +222,13 @@ export function createApp(options?: {
       entry = await registerProject({ path: targetPath, key: config.key, name: config.name });
     }
 
-    const reg = await readRegistry();
-    watcher.syncProjects(reg.projects);
-    watcher.notify(entry.id, "project.registered");
+    await sync.publishProjectChange(entry.id, entry.path);
     return c.json(entry, 201);
   });
 
   app.delete("/api/projects/:projectId", async (c) => {
     const ok = await unregisterProject(c.req.param("projectId"));
-    const reg = await readRegistry();
-    watcher.syncProjects(reg.projects);
+    await sync.publishProjects();
     return c.json({ removed: ok });
   });
 
@@ -277,7 +264,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json();
     const updated = await store.updateConfig(body);
-    watcher.notify(store.projectId, "config.updated");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(updated);
   });
 
@@ -286,7 +273,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json();
     const ticket = await store.createTicket(body);
-    watcher.notify(store.projectId, "ticket.created");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket, 201);
   });
 
@@ -305,7 +292,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json().catch(() => ({}));
     const result = await launchTicketInT3(store, c.req.param("ticketId"), body);
-    watcher.notify(store.projectId, "t3.launched");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(result, 201);
   });
 
@@ -323,7 +310,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json();
     const ticket = await store.updateTicket(c.req.param("ticketId"), body);
-    watcher.notify(store.projectId, "ticket.updated");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
@@ -334,7 +321,7 @@ export function createApp(options?: {
       rank: body.rank,
       actor: body.actor,
     });
-    watcher.notify(store.projectId, "ticket.moved");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
@@ -343,7 +330,7 @@ export function createApp(options?: {
     const index = Number(c.req.param("index"));
     const body = (await c.req.json().catch(() => ({}))) as { checked?: boolean; actor?: string };
     const ticket = await store.toggleChecklistItem(c.req.param("ticketId"), index, body);
-    watcher.notify(store.projectId, "ticket.checklist");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
@@ -351,14 +338,14 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = (await c.req.json()) as { body: string; actor?: string };
     const ticket = await store.addComment(c.req.param("ticketId"), body.body, body.actor);
-    watcher.notify(store.projectId, "ticket.commented");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket, 201);
   });
 
   app.delete("/api/projects/:projectId/tickets/:ticketId", async (c) => {
     const store = await storeForParam(c.req.param("projectId"));
     await store.deleteTicket(c.req.param("ticketId"));
-    watcher.notify(store.projectId, "ticket.deleted");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json({ deleted: true });
   });
 
@@ -367,7 +354,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json();
     const ticket = await store.requestReview(c.req.param("ticketId"), body);
-    watcher.notify(store.projectId, "review.requested");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
@@ -375,7 +362,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = (await c.req.json().catch(() => ({}))) as { note?: string; actor?: string };
     const ticket = await store.approveReview(c.req.param("ticketId"), body);
-    watcher.notify(store.projectId, "review.approved");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
@@ -383,7 +370,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = (await c.req.json()) as { note: string; actor?: string };
     const ticket = await store.rejectReview(c.req.param("ticketId"), body);
-    watcher.notify(store.projectId, "review.rejected");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
@@ -392,14 +379,14 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json().catch(() => ({}));
     const ticket = await store.acceptTriage(c.req.param("ticketId"), body);
-    watcher.notify(store.projectId, "triage.accepted");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(ticket);
   });
 
   app.post("/api/projects/:projectId/tickets/:ticketId/triage/dismiss", async (c) => {
     const store = await storeForParam(c.req.param("projectId"));
     await store.dismissTriage(c.req.param("ticketId"));
-    watcher.notify(store.projectId, "triage.dismissed");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json({ dismissed: true });
   });
 
@@ -408,14 +395,14 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = await c.req.json();
     const cycle = await store.createCycle(body);
-    watcher.notify(store.projectId, "cycle.created");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(cycle, 201);
   });
 
   app.post("/api/projects/:projectId/cycles/:cycleId/start", async (c) => {
     const store = await storeForParam(c.req.param("projectId"));
     const cycle = await store.startCycle(c.req.param("cycleId"));
-    watcher.notify(store.projectId, "cycle.started");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(cycle);
   });
 
@@ -423,7 +410,7 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const body = (await c.req.json().catch(() => ({}))) as { rolloverTo?: string | "backlog" | null };
     const result = await store.completeCycle(c.req.param("cycleId"), body);
-    watcher.notify(store.projectId, "cycle.completed");
+    await sync.publishProjectChange(store.projectId, store.root);
     return c.json(result);
   });
 
@@ -503,5 +490,5 @@ export function createApp(options?: {
     return c.text("Triathlon UI is not built yet. Run `npm run build` first.", 503);
   });
 
-  return { app, watcher };
+  return { app, sync };
 }

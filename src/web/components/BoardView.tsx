@@ -17,6 +17,7 @@ import { useMemo, useState } from "react";
 import type { ColumnConfig, Priority, ProjectSnapshot, Ticket } from "../../core/types.js";
 import { displayActor, isAgentActor } from "../../core/types.js";
 import { formatRelativeTime } from "../lib/api.js";
+import type { ConnectionState, T3LiveStatusMap } from "../lib/sync.js";
 import {
   AgentGlyph,
   BlockedIcon,
@@ -34,6 +35,8 @@ import {
 
 interface BoardViewProps {
   snapshot: ProjectSnapshot;
+  connection: ConnectionState;
+  t3Status: T3LiveStatusMap;
   onOpenTicket: (ticketId: string) => void;
   onNewTicket: (defaultStatus?: string) => void;
   onMoveTicket: (ticketId: string, toColumnId: string, rank?: number) => Promise<void>;
@@ -61,10 +64,12 @@ function TicketCardContent({
   ticket,
   columnCategory,
   doneIds,
+  liveThreadStatus,
 }: {
   ticket: Ticket;
   columnCategory: ColumnConfig["category"];
   doneIds: Set<string>;
+  liveThreadStatus?: string;
 }) {
   const activeBlockers = ticket.blockedBy.filter((id) => !doneIds.has(id));
   const checkDone = ticket.checklist.filter((c) => c.checked).length;
@@ -149,7 +154,9 @@ function TicketCardContent({
               ? `${displayActor(ticket.assignee)} · approved by you`
               : isDone
                 ? `${displayActor(ticket.assignee)} · ${formatRelativeTime(ticket.updatedAt)} ago`
-                : displayActor(ticket.assignee)}
+                : liveThreadStatus && columnCategory === "started"
+                  ? `${displayActor(ticket.assignee)} · ${liveThreadStatus}`
+                  : displayActor(ticket.assignee)}
           </span>
         </span>
         {ticket.estimate !== null && (
@@ -166,11 +173,13 @@ function SortableCard({
   ticket,
   columnCategory,
   doneIds,
+  liveThreadStatus,
   onOpenTicket,
 }: {
   ticket: Ticket;
   columnCategory: ColumnConfig["category"];
   doneIds: Set<string>;
+  liveThreadStatus?: string;
   onOpenTicket: (id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -191,7 +200,12 @@ function SortableCard({
         onClick={() => onOpenTicket(ticket.id)}
         className="block w-full rounded-md text-left"
       >
-        <TicketCardContent ticket={ticket} columnCategory={columnCategory} doneIds={doneIds} />
+        <TicketCardContent
+          ticket={ticket}
+          columnCategory={columnCategory}
+          doneIds={doneIds}
+          liveThreadStatus={liveThreadStatus}
+        />
       </button>
     </div>
   );
@@ -201,11 +215,13 @@ function BoardColumn({
   column,
   tickets,
   doneIds,
+  t3Status,
   onOpenTicket,
 }: {
   column: ColumnConfig;
   tickets: Ticket[];
   doneIds: Set<string>;
+  t3Status: T3LiveStatusMap;
   onOpenTicket: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -265,6 +281,7 @@ function BoardColumn({
               ticket={ticket}
               columnCategory={column.category}
               doneIds={doneIds}
+              liveThreadStatus={t3Status[ticket.id]?.status}
               onOpenTicket={onOpenTicket}
             />
           ))}
@@ -293,6 +310,8 @@ function BoardColumn({
 
 export function BoardView({
   snapshot,
+  connection,
+  t3Status,
   onOpenTicket,
   onNewTicket,
   onMoveTicket,
@@ -328,8 +347,13 @@ export function BoardView({
     () => new Set(acceptedTickets.filter((t) => doneColIds.has(t.status)).map((t) => t.id)),
     [acceptedTickets, doneColIds],
   );
-  const backlogColIds = useMemo(
-    () => new Set(snapshot.config.columns.filter((c) => c.category === "backlog").map((c) => c.id)),
+  const alwaysVisibleUncycledColIds = useMemo(
+    () =>
+      new Set(
+        snapshot.config.columns
+          .filter((c) => c.category === "backlog" || c.category === "started" || c.category === "review")
+          .map((c) => c.id),
+      ),
     [snapshot.config.columns],
   );
 
@@ -349,8 +373,8 @@ export function BoardView({
     return acceptedTickets.filter((t) => {
       if (cycleFilter !== "all") {
         const inSelectedCycle = t.cycleId === cycleFilter;
-        const inBacklog = backlogColIds.has(t.status) && t.cycleId === null;
-        if (!inSelectedCycle && !inBacklog) return false;
+        const activeUncycled = alwaysVisibleUncycledColIds.has(t.status) && t.cycleId === null;
+        if (!inSelectedCycle && !activeUncycled) return false;
       }
       if (priorityFilter !== "any" && t.priority !== (priorityFilter as Priority)) return false;
       if (assigneeFilter !== "any") {
@@ -363,7 +387,7 @@ export function BoardView({
       if (labelFilter !== "any" && !t.labels.includes(labelFilter)) return false;
       return true;
     });
-  }, [acceptedTickets, cycleFilter, priorityFilter, assigneeFilter, labelFilter, backlogColIds]);
+  }, [acceptedTickets, cycleFilter, priorityFilter, assigneeFilter, labelFilter, alwaysVisibleUncycledColIds]);
 
   const ticketsByColumn = useMemo(() => {
     const map = new Map<string, Ticket[]>();
@@ -1103,13 +1127,24 @@ export function BoardView({
           <div className="flex items-center gap-1.5 text-[12px]" style={{ color: "var(--ink-3)" }}>
             <span
               className="inline-block h-1.5 w-1.5 rounded-full"
-              style={{ background: "var(--done)" }}
+              style={{
+                background:
+                  connection === "live"
+                    ? "var(--done)"
+                    : connection === "reconnecting" || connection === "connecting"
+                      ? "var(--accent)"
+                      : "var(--ink-3)",
+              }}
               aria-hidden="true"
             />
             <span>
-              {snapshot.lastEventAt
-                ? `Synced from events.jsonl ${formatRelativeTime(snapshot.lastEventAt)} ago`
-                : "Watching .triathlon/"}
+              {connection === "offline"
+                ? "Offline"
+                : connection === "reconnecting"
+                  ? "Reconnecting…"
+                  : snapshot.lastEventAt
+                    ? `Live · synced ${formatRelativeTime(snapshot.lastEventAt)} ago`
+                    : "Live · synced"}
             </span>
           </div>
         </div>
@@ -1127,6 +1162,7 @@ export function BoardView({
                 column={col}
                 tickets={ticketsByColumn.get(col.id) ?? []}
                 doneIds={doneIds}
+                t3Status={t3Status}
                 onOpenTicket={onOpenTicket}
               />
             ))}

@@ -3,7 +3,7 @@ import { serve } from "@hono/node-server";
 import { readRegistry, registerProject } from "../core/registry.js";
 import { findProjectRoot, readConfig } from "../core/storage.js";
 import { createApp } from "./app.js";
-import { ProjectWatcher } from "./watcher.js";
+import { SyncEngine } from "./sync.js";
 
 export async function startServer(options?: {
   port?: number;
@@ -34,11 +34,12 @@ export async function startServer(options?: {
     await registerProject({ path: cwdRoot, key: config.key, name: config.name });
   }
 
-  const watcher = new ProjectWatcher();
+  const sync = new SyncEngine();
+  sync.start();
   const registry = await readRegistry();
-  watcher.syncProjects(registry.projects);
+  sync.syncProjectWatchers(registry.projects);
 
-  const { app } = createApp({ watcher, allowedTailscaleUsers });
+  const { app } = createApp({ sync, allowedTailscaleUsers });
 
   const server = serve({
     fetch: app.fetch,
@@ -60,7 +61,7 @@ export async function startServer(options?: {
   }
 
   const close = async () => {
-    await watcher.close();
+    await sync.close();
     if ("closeAllConnections" in server && typeof server.closeAllConnections === "function") {
       server.closeAllConnections();
     }

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import type { ProjectSnapshot, ProjectSummary, ThemePreference } from "../core/types.js";
+import { useEffect, useState } from "react";
+import type { ThemePreference } from "../core/types.js";
 import { BacklogView } from "./components/BacklogView.js";
 import { BoardView } from "./components/BoardView.js";
 import { CyclesView } from "./components/CyclesView.js";
@@ -11,6 +11,7 @@ import { SettingsView } from "./components/SettingsView.js";
 import { type NavView, Sidebar } from "./components/Sidebar.js";
 import { TicketDrawer } from "./components/TicketDrawer.js";
 import { api } from "./lib/api.js";
+import { syncClient, useSyncStore } from "./lib/sync.js";
 
 function applyResolvedTheme(pref: ThemePreference) {
   const resolved =
@@ -23,75 +24,27 @@ function applyResolvedTheme(pref: ThemePreference) {
 }
 
 export function App() {
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [snapshot, setSnapshot] = useState<ProjectSnapshot | null>(null);
+  const sync = useSyncStore();
   const [view, setView] = useState<NavView>("board");
-  const [theme, setTheme] = useState<ThemePreference>("light");
   const [openTicketId, setOpenTicketId] = useState<string | null>(null);
   const [reviewTicketId, setReviewTicketId] = useState<string | null>(null);
   const [newTicketStatus, setNewTicketStatus] = useState<string | null>(null);
   const [showAddProject, setShowAddProject] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showMoreSheet, setShowMoreSheet] = useState(false);
-  const [loading, setLoading] = useState(true);
 
-  const loadProjects = useCallback(async (preferredId?: string | null) => {
-    const res = await api.getProjects();
-    setProjects(res.projects);
-    setTheme(res.theme);
-    applyResolvedTheme(res.theme);
-    const valid = res.projects.filter((p) => p.exists);
-    const chosen =
-      (preferredId && valid.find((p) => p.id === preferredId)?.id) ??
-      (res.lastProjectId && valid.find((p) => p.id === res.lastProjectId)?.id) ??
-      valid[0]?.id ??
-      null;
-    setActiveProjectId(chosen);
-    return chosen;
-  }, []);
+  const snapshot = sync.activeProjectId ? sync.snapshots[sync.activeProjectId] ?? null : null;
+  const t3Status = sync.activeProjectId ? sync.t3Status[sync.activeProjectId] ?? {} : {};
 
-  const loadSnapshot = useCallback(async (projectId: string | null) => {
-    if (!projectId) {
-      setSnapshot(null);
-      setLoading(false);
-      return;
-    }
-    const snap = await api.getSnapshot(projectId);
-    setSnapshot(snap);
-    setLoading(false);
-  }, []);
-
+  // Apply theme & listen to OS color-scheme changes when theme === "system"
   useEffect(() => {
-    void loadProjects().then((id) => loadSnapshot(id));
-  }, [loadProjects, loadSnapshot]);
-
-  // Listen to OS color-scheme changes when theme === "system"
-  useEffect(() => {
-    applyResolvedTheme(theme);
-    if (theme !== "system") return;
+    applyResolvedTheme(sync.theme);
+    if (sync.theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const listener = () => applyResolvedTheme("system");
     mq.addEventListener("change", listener);
     return () => mq.removeEventListener("change", listener);
-  }, [theme]);
-
-  // Live SSE watcher subscription
-  useEffect(() => {
-    const source = new EventSource("/api/events");
-    source.addEventListener("board-update", (event) => {
-      try {
-        const data = JSON.parse((event as MessageEvent).data) as { projectId?: string };
-        void loadProjects(activeProjectId);
-        if (activeProjectId && (!data.projectId || data.projectId === activeProjectId)) {
-          void loadSnapshot(activeProjectId);
-        }
-      } catch {
-        // ignore parse issues
-      }
-    });
-    return () => source.close();
-  }, [activeProjectId, loadProjects, loadSnapshot]);
+  }, [sync.theme]);
 
   // Global keyboard shortcuts (⌘K, c)
   useEffect(() => {
@@ -118,48 +71,39 @@ export function App() {
   }, [snapshot, openTicketId, showPalette]);
 
   const handleSelectProject = async (id: string) => {
-    setActiveProjectId(id);
     setOpenTicketId(null);
     setReviewTicketId(null);
-    await loadSnapshot(id);
+    await syncClient.selectProject(id);
   };
 
   const handleToggleTheme = async (next: ThemePreference) => {
-    setTheme(next);
-    applyResolvedTheme(next);
-    await api.updatePreferences({ theme: next });
+    await syncClient.setTheme(next);
   };
 
   const handleRefresh = async () => {
-    await Promise.all([loadProjects(activeProjectId), loadSnapshot(activeProjectId)]);
+    await syncClient.refreshActive();
   };
 
   const handleMoveTicket = async (ticketId: string, toColumnId: string, rank?: number) => {
     if (!snapshot) return;
-    const prevSnapshot = snapshot;
     const nextRank =
       rank ??
       snapshot.tickets
         .filter((t) => t.status === toColumnId && t.id !== ticketId)
         .reduce((max, t) => Math.max(max, t.rank), 0) + 1000;
 
-    // Optimistic update so the card lands immediately without snapping back
-    setSnapshot({
-      ...snapshot,
-      tickets: snapshot.tickets.map((t) =>
-        t.id === ticketId
-          ? { ...t, status: toColumnId, rank: nextRank, updatedAt: new Date().toISOString() }
-          : t,
-      ),
-    });
-
-    try {
-      await api.moveTicket(snapshot.projectId, ticketId, toColumnId, nextRank);
-      await handleRefresh();
-    } catch (error) {
-      setSnapshot(prevSnapshot);
-      throw error;
-    }
+    await syncClient.mutateOptimistic(
+      snapshot.projectId,
+      (snap) => ({
+        ...snap,
+        tickets: snap.tickets.map((t) =>
+          t.id === ticketId
+            ? { ...t, status: toColumnId, rank: nextRank, updatedAt: new Date().toISOString() }
+            : t,
+        ),
+      }),
+      () => api.moveTicket(snapshot.projectId, ticketId, toColumnId, nextRank),
+    );
   };
 
   const openTicket = openTicketId && snapshot ? snapshot.tickets.find((t) => t.id === openTicketId) ?? null : null;
@@ -167,11 +111,11 @@ export function App() {
   return (
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden md:flex-row">
       <Sidebar
-        projects={projects}
-        activeProjectId={activeProjectId}
+        projects={sync.projects}
+        activeProjectId={sync.activeProjectId}
         snapshot={snapshot}
         view={view}
-        theme={theme}
+        theme={sync.theme}
         onSelectProject={(id) => void handleSelectProject(id)}
         onAddProject={() => setShowAddProject(true)}
         onSelectView={(v) => {
@@ -183,7 +127,7 @@ export function App() {
       />
 
       <main className="min-h-0 min-w-0 flex-1 overflow-hidden" style={{ background: "var(--bg-paper)" }}>
-        {loading ? (
+        {sync.loading && !snapshot ? (
           <div className="flex h-full items-center justify-center text-[13px]" style={{ color: "var(--ink-3)" }}>
             Loading workbench…
           </div>
@@ -208,6 +152,8 @@ export function App() {
             {view === "board" && (
               <BoardView
                 snapshot={snapshot}
+                connection={sync.connection}
+                t3Status={t3Status}
                 onOpenTicket={(id) => setOpenTicketId(id)}
                 onNewTicket={(status) =>
                   setNewTicketStatus(status ?? snapshot.config.columns[1]?.id ?? snapshot.config.columns[0].id)
@@ -246,8 +192,8 @@ export function App() {
                 onRefresh={handleRefresh}
                 onUnregister={async () => {
                   await api.unregisterProject(snapshot.projectId);
-                  const nextId = await loadProjects(null);
-                  await loadSnapshot(nextId);
+                  await syncClient.selectProject(null);
+                  await syncClient.refreshActive();
                 }}
               />
             )}
@@ -267,9 +213,9 @@ export function App() {
 
       {showMoreSheet && (
         <MoreBottomSheet
-          projects={projects}
-          activeProjectId={activeProjectId}
-          theme={theme}
+          projects={sync.projects}
+          activeProjectId={sync.activeProjectId}
+          theme={sync.theme}
           onClose={() => setShowMoreSheet(false)}
           onSelectProject={(id) => void handleSelectProject(id)}
           onAddProject={() => setShowAddProject(true)}
@@ -304,15 +250,15 @@ export function App() {
         <AddProjectModal
           onClose={() => setShowAddProject(false)}
           onAdded={async (id) => {
-            const chosen = await loadProjects(id);
-            await loadSnapshot(chosen);
+            await syncClient.selectProject(id);
+            await syncClient.refreshActive();
           }}
         />
       )}
 
       {showPalette && (
         <CommandPalette
-          projects={projects}
+          projects={sync.projects}
           snapshot={snapshot}
           onClose={() => setShowPalette(false)}
           onSelectProject={(id) => void handleSelectProject(id)}

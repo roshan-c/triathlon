@@ -28,7 +28,7 @@ describe("Hono local API", () => {
       demo: true,
     });
 
-    const { app, watcher } = createApp();
+    const { app, sync } = createApp();
     try {
       const listRes = await app.request("/api/projects");
       expect(listRes.status).toBe(200);
@@ -66,12 +66,12 @@ describe("Hono local API", () => {
       expect(svgRes.status).toBe(200);
       expect(await svgRes.text()).toContain("<svg");
     } finally {
-      await watcher.close();
+      await sync.close();
     }
   });
 
   it("enforces Tailscale-User-Login allowlist when configured", async () => {
-    const { app, watcher } = createApp({ allowedTailscaleUsers: ["roshan-c@github"] });
+    const { app, sync } = createApp({ allowedTailscaleUsers: ["roshan-c@github"] });
     try {
       const noHeader = await app.request("/api/projects");
       expect(noHeader.status).toBe(403);
@@ -89,7 +89,7 @@ describe("Hono local API", () => {
       expect(body.login).toBe("Roshan-C@github");
       expect(body.authEnforced).toBe(true);
     } finally {
-      await watcher.close();
+      await sync.close();
     }
   });
 });

@@ -598,10 +598,11 @@ export class ProjectStore {
   }
 
   async claimTicket(ticketId: string, actor: string, options?: { branch?: string; moveToStarted?: boolean }): Promise<Ticket> {
-    const [config, ticket, allTickets] = await Promise.all([
+    const [config, ticket, allTickets, cyclesFile] = await Promise.all([
       readConfig(this.root),
       readTicket(this.root, ticketId),
       readAllTickets(this.root),
+      readCycles(this.root),
     ]);
     const now = new Date().toISOString();
     const fromStatus = ticket.status;
@@ -618,6 +619,26 @@ export class ProjectStore {
         movedTo = startedCol.id;
       }
     }
+
+    // If the ticket wasn't in a cycle yet and there's an active cycle, pull it into the active cycle
+    // so it stays visible on the active cycle board and counts toward cycle scope.
+    let addedToCycleId: string | null = null;
+    if (!ticket.cycleId) {
+      const activeCycle = cyclesFile.cycles.find((c) => c.state === "active");
+      if (activeCycle) {
+        ticket.cycleId = activeCycle.id;
+        addedToCycleId = activeCycle.id;
+        activeCycle.scopeChanges.push({
+          at: now,
+          ticketId: ticket.id,
+          action: "added",
+          points: ticket.estimate ?? 0,
+          actor: ticket.assignee,
+        });
+        await writeCycles(this.root, cyclesFile);
+      }
+    }
+
     ticket.updatedAt = now;
     const saved = await writeTicket(this.root, ticket);
 
@@ -637,6 +658,16 @@ export class ProjectStore {
         ticketId: saved.id,
         cycleId: saved.cycleId ?? undefined,
         data: { from: fromStatus, to: movedTo },
+      });
+    }
+    if (addedToCycleId) {
+      await appendEvent(this.root, {
+        at: now,
+        type: "cycle.scope_changed",
+        actor: ticket.assignee,
+        ticketId: saved.id,
+        cycleId: addedToCycleId,
+        data: { action: "added", points: saved.estimate ?? 0 },
       });
     }
     return saved;
@@ -1085,9 +1116,9 @@ export class ProjectStore {
       ...(blockers.length ? ["", "## Dependencies", ...blockers] : []),
       "",
       "## Triathlon Workflow",
-      `1. Claim this ticket if not already claimed: \`tri claim ${ticket.id} --by agent:<your-name>\` (or via Triathlon MCP \`claim_ticket\`).`,
-      `2. As you satisfy checklist items, mark them done via \`tri check ${ticket.id} <n>\` or MCP \`toggle_checklist_item\`.`,
-      `3. When finished and verified, request human review via \`tri review request ${ticket.id} --summary "..."\` or MCP \`request_review\` (do not move directly to Done).`,
+      `1. Claim this ticket if not already claimed: \`tri -P "${this.root}" claim ${ticket.id} --by agent:<your-name>\` (or via Triathlon MCP \`claim_ticket\`).`,
+      `2. As you satisfy checklist items, mark them done via \`tri -P "${this.root}" check ${ticket.id} <n>\` or MCP \`toggle_checklist_item\`.`,
+      `3. When finished and verified, request human review via \`tri -P "${this.root}" review request ${ticket.id} --summary "..."\` or MCP \`request_review\` (do not move directly to Done).`,
     ];
     return lines.join("\n");
   }
