@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { toggleChecklistInMarkdown } from "./markdown.js";
 import { buildMetricsReport, calculateCycleMetrics } from "./metrics.js";
 import { projectIdForPath, registerProject } from "./registry.js";
+import { sendReviewFeedbackToT3 } from "./t3.js";
 import {
   appendEvent,
   DEFAULT_COLUMNS,
@@ -335,6 +336,10 @@ export class ProjectStore {
       blockedBy: [...new Set((input.blockedBy ?? []).map((b) => b.trim().toUpperCase()).filter(Boolean))],
       files: [...new Set((input.files ?? []).map((f) => f.trim()).filter(Boolean))],
       branch: input.branch?.trim() || null,
+      t3ThreadId: null,
+      t3Provider: null,
+      t3Model: null,
+      t3Reasoning: null,
       triage: input.proposed ? "proposed" : "accepted",
       proposedBy: input.proposed ? actor : null,
       review: { state: "none" },
@@ -835,6 +840,12 @@ export class ProjectStore {
       cycleId: saved.cycleId ?? undefined,
       data: { from: fromStatus, to: startedCol.id, requestedBy, note },
     });
+
+    // Automatically forward review feedback to linked T3 Code thread (if enabled & linked)
+    if (saved.t3ThreadId) {
+      await sendReviewFeedbackToT3(this.root, saved, note, actor);
+    }
+
     return saved;
   }
 

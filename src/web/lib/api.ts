@@ -5,6 +5,7 @@ import type {
   ProjectConfig,
   ProjectSnapshot,
   ProjectSummary,
+  T3Settings,
   ThemePreference,
   Ticket,
 } from "../../core/types.js";
@@ -131,6 +132,46 @@ export const api = {
   getPrompt: (projectId: string, ticketId: string) =>
     request<{ prompt: string }>(
       `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/prompt`,
+    ),
+
+  getT3Settings: () => request<T3Settings>("/api/t3/settings"),
+
+  updateT3Settings: (patch: Partial<T3Settings>) =>
+    request<T3Settings>("/api/t3/settings", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  launchInT3: (
+    projectId: string,
+    ticketId: string,
+    overrides?: {
+      agent?: string;
+      provider?: string;
+      model?: string;
+      reasoningKey?: string;
+      reasoningValue?: string;
+      baseRef?: string;
+      branch?: string;
+    },
+  ) =>
+    request<{
+      ticket: Ticket;
+      threadId: string;
+      branch: string;
+      baseRef: string;
+      agent: string;
+      provider: string;
+      model: string;
+      reasoning: string | null;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/t3/launch`,
+      { method: "POST", body: JSON.stringify(overrides ?? {}) },
+    ),
+
+  getT3Status: (projectId: string, ticketId: string) =>
+    request<{ linked: boolean; threadId?: string; status?: string; title?: string; branch?: string | null }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/t3/status`,
     ),
 
   deleteTicket: (projectId: string, ticketId: string) =>

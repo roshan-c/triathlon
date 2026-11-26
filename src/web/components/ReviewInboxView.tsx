@@ -535,6 +535,11 @@ export function ReviewInboxView({
                     {error}
                   </div>
                 )}
+                {selected.t3ThreadId && (
+                  <div className="mb-2 text-[11px]" style={{ color: "var(--ink-3)" }}>
+                    Linked T3 thread · Send back will message <code>{selected.t3ThreadId.slice(0, 18)}…</code>
+                  </div>
+                )}
                 <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:gap-3">
                   <input
                     value={note}

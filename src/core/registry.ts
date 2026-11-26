@@ -2,7 +2,75 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { RegisteredProject, Registry, ThemePreference } from "./types.js";
+import type { AgentModelConfig, RegisteredProject, Registry, T3Settings, ThemePreference } from "./types.js";
+
+export function defaultT3Settings(): T3Settings {
+  return {
+    defaultAgent: "agent:claude",
+    defaultBaseRef: "",
+    sendBackToThread: true,
+    agents: {
+      "agent:claude": {
+        assignee: "agent:claude",
+        label: "Claude Code",
+        provider: "claudeAgent",
+        model: "claude-opus-5-5",
+        reasoningKey: "effort",
+        reasoningValue: "medium",
+      },
+      "agent:agy": {
+        assignee: "agent:agy",
+        label: "Antigravity",
+        provider: "antigravity",
+        model: "gemini-4-neon",
+        reasoningKey: "thought_level",
+        reasoningValue: "high",
+      },
+      "agent:pi": {
+        assignee: "agent:pi",
+        label: "Pi",
+        provider: "pi",
+        model: "opencode-go/qwen4-max",
+        reasoningKey: "thinking",
+        reasoningValue: "high",
+      },
+      "agent:codex": {
+        assignee: "agent:codex",
+        label: "Codex",
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        reasoningKey: "reasoningEffort",
+        reasoningValue: "high",
+      },
+    },
+  };
+}
+
+function mergeT3Settings(raw?: Partial<T3Settings> | null): T3Settings {
+  const base = defaultT3Settings();
+  if (!raw || typeof raw !== "object") return base;
+  const mergedAgents: Record<string, AgentModelConfig> = { ...base.agents };
+  if (raw.agents && typeof raw.agents === "object") {
+    for (const [key, val] of Object.entries(raw.agents)) {
+      if (!val || typeof val !== "object") continue;
+      const existing = mergedAgents[key];
+      mergedAgents[key] = {
+        assignee: val.assignee || existing?.assignee || key,
+        label: val.label || existing?.label || key,
+        provider: val.provider || existing?.provider || "claudeAgent",
+        model: val.model || existing?.model || "",
+        reasoningKey: val.reasoningKey ?? existing?.reasoningKey ?? "effort",
+        reasoningValue: val.reasoningValue ?? existing?.reasoningValue ?? "",
+      };
+    }
+  }
+  return {
+    defaultAgent: typeof raw.defaultAgent === "string" && raw.defaultAgent.trim() ? raw.defaultAgent.trim() : base.defaultAgent,
+    defaultBaseRef: typeof raw.defaultBaseRef === "string" ? raw.defaultBaseRef.trim() : base.defaultBaseRef,
+    sendBackToThread: raw.sendBackToThread !== false,
+    agents: mergedAgents,
+  };
+}
 
 export function getTriathlonHome(): string {
   return process.env.TRIATHLON_HOME ? resolve(process.env.TRIATHLON_HOME) : join(homedir(), ".triathlon");
@@ -22,6 +90,7 @@ function defaultRegistry(): Registry {
     version: 1,
     lastProjectId: null,
     theme: "light",
+    t3: defaultT3Settings(),
     projects: [],
   };
 }
@@ -35,6 +104,7 @@ export async function readRegistry(): Promise<Registry> {
       version: 1,
       lastProjectId: parsed.lastProjectId ?? null,
       theme: parsed.theme === "dark" || parsed.theme === "system" ? parsed.theme : "light",
+      t3: mergeT3Settings(parsed.t3),
       projects: Array.isArray(parsed.projects) ? parsed.projects : [],
     };
   } catch (error) {
@@ -98,10 +168,18 @@ export async function unregisterProject(idOrPath: string): Promise<boolean> {
 export async function updateRegistryPrefs(prefs: {
   lastProjectId?: string | null;
   theme?: ThemePreference;
+  t3?: Partial<T3Settings>;
 }): Promise<Registry> {
   const registry = await readRegistry();
   if (prefs.lastProjectId !== undefined) registry.lastProjectId = prefs.lastProjectId;
   if (prefs.theme !== undefined) registry.theme = prefs.theme;
+  if (prefs.t3 !== undefined) {
+    registry.t3 = mergeT3Settings({
+      ...registry.t3,
+      ...prefs.t3,
+      agents: prefs.t3.agents ? { ...registry.t3.agents, ...prefs.t3.agents } : registry.t3.agents,
+    });
+  }
   return writeRegistry(registry);
 }
 

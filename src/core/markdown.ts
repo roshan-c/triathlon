@@ -164,6 +164,10 @@ export function parseTicketMarkdown(raw: string, fallbackId: string): Ticket {
       ? [...new Set(data.files.map((f) => String(f).trim()).filter(Boolean))]
       : [],
     branch: typeof data.branch === "string" && data.branch.trim() ? data.branch.trim() : null,
+    t3ThreadId: typeof data.t3ThreadId === "string" && data.t3ThreadId.trim() ? data.t3ThreadId.trim() : null,
+    t3Provider: typeof data.t3Provider === "string" && data.t3Provider.trim() ? data.t3Provider.trim() : null,
+    t3Model: typeof data.t3Model === "string" && data.t3Model.trim() ? data.t3Model.trim() : null,
+    t3Reasoning: typeof data.t3Reasoning === "string" && data.t3Reasoning.trim() ? data.t3Reasoning.trim() : null,
     triage: VALID_TRIAGE.has(triageRaw) ? triageRaw : "accepted",
     proposedBy: typeof data.proposedBy === "string" && data.proposedBy.trim() ? data.proposedBy.trim() : null,
     review: normalizeReview(data.review),
@@ -193,6 +197,10 @@ export function serializeTicketMarkdown(ticket: Ticket): string {
   if (ticket.blockedBy.length > 0) frontmatter.blockedBy = ticket.blockedBy;
   if (ticket.files.length > 0) frontmatter.files = ticket.files;
   if (ticket.branch) frontmatter.branch = ticket.branch;
+  if (ticket.t3ThreadId) frontmatter.t3ThreadId = ticket.t3ThreadId;
+  if (ticket.t3Provider) frontmatter.t3Provider = ticket.t3Provider;
+  if (ticket.t3Model) frontmatter.t3Model = ticket.t3Model;
+  if (ticket.t3Reasoning) frontmatter.t3Reasoning = ticket.t3Reasoning;
   if (ticket.triage !== "accepted") frontmatter.triage = ticket.triage;
   if (ticket.proposedBy) frontmatter.proposedBy = ticket.proposedBy;
 

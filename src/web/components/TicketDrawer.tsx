@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Priority, ProjectSnapshot, Ticket } from "../../core/types.js";
+import type { Priority, ProjectSnapshot, T3Settings, Ticket } from "../../core/types.js";
 import { displayActor, isAgentActor } from "../../core/types.js";
 import { api, copyText, formatRelativeTime } from "../lib/api.js";
 import {
@@ -13,6 +13,37 @@ import {
   EditPencilIcon,
   PriorityGlyph,
 } from "./Icons.js";
+
+const MODEL_SUGGESTIONS: Record<string, string[]> = {
+  claudeAgent: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"],
+  antigravity: ["gemini-4-neon", "gemini-4-carbon", "gemini-4-argon", "gemini-4-hydrogen", "gemini-3.8-flash"],
+  pi: [
+    "opencode-go/qwen4-max",
+    "opencode-go/qwen3.8-max",
+    "opencode-go/claude-haiku-5-5",
+    "opencode-go/deepseek-v4.1-flash",
+    "opencode-go/gemini-4-argon",
+  ],
+  codex: ["gpt-5.3-codex", "gpt-5.2-codex"],
+};
+
+const REASONING_OPTIONS: Record<string, string[]> = {
+  effort: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
+  thought_level: ["low", "medium", "high", "xhigh"],
+  thinking: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  reasoningEffort: ["low", "medium", "high", "xhigh"],
+};
+
+function defaultBranchFor(ticket: Ticket): string {
+  if (ticket.branch) return ticket.branch;
+  const slug = ticket.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  return `${ticket.id.toLowerCase()}-${slug || "work"}`;
+}
 
 interface TicketDrawerProps {
   snapshot: ProjectSnapshot;
@@ -36,13 +67,80 @@ export function TicketDrawer({
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [t3Settings, setT3Settings] = useState<T3Settings | null>(null);
+  const [launchAgent, setLaunchAgent] = useState("agent:claude");
+  const [launchModel, setLaunchModel] = useState("");
+  const [launchReasoning, setLaunchReasoning] = useState("");
+  const [launchBaseRef, setLaunchBaseRef] = useState("");
+  const [launchBranch, setLaunchBranch] = useState(defaultBranchFor(ticket));
+  const [t3Status, setT3Status] = useState<string | null>(null);
 
   useEffect(() => {
     setTitleDraft(ticket.title);
     setDescDraft(ticket.description);
     setEditingBody(false);
     setError(null);
+    setLaunchOpen(false);
+    setLaunchBranch(defaultBranchFor(ticket));
+    setT3Status(null);
   }, [ticket.id, ticket.title, ticket.description]);
+
+  const openLaunchDialog = async () => {
+    setError(null);
+    try {
+      const settings = t3Settings ?? (await api.getT3Settings());
+      setT3Settings(settings);
+      const assigneeKey =
+        ticket.assignee && ticket.assignee.startsWith("agent:") && settings.agents[ticket.assignee.toLowerCase()]
+          ? ticket.assignee.toLowerCase()
+          : settings.defaultAgent;
+      const profile = settings.agents[assigneeKey] ?? Object.values(settings.agents)[0];
+      setLaunchAgent(profile.assignee);
+      setLaunchModel(profile.model);
+      setLaunchReasoning(profile.reasoningValue);
+      setLaunchBaseRef(settings.defaultBaseRef);
+      setLaunchBranch(defaultBranchFor(ticket));
+      setLaunchOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load T3 settings");
+    }
+  };
+
+  const handleLaunchAgentChange = (nextAgent: string) => {
+    setLaunchAgent(nextAgent);
+    const profile = t3Settings?.agents[nextAgent];
+    if (profile) {
+      setLaunchModel(profile.model);
+      setLaunchReasoning(profile.reasoningValue);
+    }
+  };
+
+  const handleConfirmLaunch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const profile = t3Settings?.agents[launchAgent];
+    await run(async () => {
+      await api.launchInT3(snapshot.projectId, ticket.id, {
+        agent: launchAgent,
+        provider: profile?.provider,
+        model: launchModel.trim() || undefined,
+        reasoningKey: profile?.reasoningKey,
+        reasoningValue: launchReasoning,
+        baseRef: launchBaseRef.trim() || undefined,
+        branch: launchBranch.trim() || undefined,
+      });
+      setLaunchOpen(false);
+    });
+  };
+
+  const handleCheckT3Status = async () => {
+    try {
+      const res = await api.getT3Status(snapshot.projectId, ticket.id);
+      setT3Status(res.status ?? "unknown");
+    } catch {
+      setT3Status("unavailable");
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -281,6 +379,30 @@ export function TicketDrawer({
         </div>
       )}
 
+      {ticket.t3ThreadId && (
+        <div className={mobileGrid ? "col-span-2" : ""}>
+          <div className="mb-1 flex items-center justify-between text-[11px]" style={{ color: "var(--ink-3)" }}>
+            <span>T3 thread</span>
+            <button
+              type="button"
+              onClick={() => void handleCheckT3Status()}
+              className="hover:underline"
+              style={{ color: "var(--ink-2)" }}
+            >
+              {t3Status ? t3Status : "check status"}
+            </button>
+          </div>
+          <div className="truncate font-mono text-[11px]" style={{ color: "var(--ink)" }}>
+            {ticket.t3ThreadId}
+          </div>
+          {(ticket.t3Model || ticket.t3Reasoning) && (
+            <div className="mt-0.5 truncate text-[11px]" style={{ color: "var(--ink-3)" }}>
+              {[ticket.t3Model, ticket.t3Reasoning].filter(Boolean).join(" · ")}
+            </div>
+          )}
+        </div>
+      )}
+
       {ticket.files.length > 0 && (
         <div className={mobileGrid ? "col-span-2" : ""}>
           <div className="mb-1 text-[11px]" style={{ color: "var(--ink-3)" }}>Linked files</div>
@@ -367,6 +489,16 @@ export function TicketDrawer({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              disabled={busy}
+              onClick={() => void openLaunchDialog()}
+              className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-semibold"
+              style={{ borderColor: "var(--border-input)", color: "var(--ink)" }}
+            >
+              <AgentGlyph size={13} />
+              <span>Run in T3</span>
+            </button>
+            <button
+              type="button"
               onClick={handleCopyPrompt}
               className="flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] font-medium"
               style={{ borderColor: "var(--border-strong)", color: "var(--ink-2)" }}
@@ -415,15 +547,27 @@ export function TicketDrawer({
                   {ticket.estimate !== null && <span>· {ticket.estimate} pt</span>}
                   {cycle && <span>· Cycle {cycle.number}</span>}
                 </span>
-                <button
-                  type="button"
-                  onClick={handleCopyPrompt}
-                  className="flex min-h-[36px] items-center gap-1.5 font-semibold"
-                  style={{ color: "var(--ink)" }}
-                >
-                  <CopyIcon size={13} />
-                  <span>{copiedPrompt ? "Copied" : "Copy prompt"}</span>
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void openLaunchDialog()}
+                    className="flex min-h-[36px] items-center gap-1.5 font-semibold"
+                    style={{ color: "var(--accent)" }}
+                  >
+                    <AgentGlyph size={13} />
+                    <span>Run in T3</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyPrompt}
+                    className="flex min-h-[36px] items-center gap-1.5 font-semibold"
+                    style={{ color: "var(--ink)" }}
+                  >
+                    <CopyIcon size={13} />
+                    <span>{copiedPrompt ? "Copied" : "Copy"}</span>
+                  </button>
+                </div>
               </div>
             )}
 
@@ -707,6 +851,145 @@ export function TicketDrawer({
           </div>
         </footer>
       </aside>
+
+      {/* Launch in T3 Code modal/sheet */}
+      {launchOpen && t3Settings && (
+        <div
+          className="fixed inset-0 z-60 flex items-end justify-center p-0 sm:items-center sm:p-6"
+          style={{ background: "var(--scrim)" }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setLaunchOpen(false);
+          }}
+        >
+          <form
+            onSubmit={handleConfirmLaunch}
+            className="pb-safe w-full max-w-[460px] rounded-t-2xl border p-5 shadow-2xl sm:rounded-md"
+            style={{ background: "var(--bg-card)", borderColor: "var(--border-strong)" }}
+          >
+            <div className="mb-1 flex items-center justify-between">
+              <h3 className="m-0 text-[16px] font-bold">Run {ticket.id} in T3 Code</h3>
+              <button type="button" onClick={() => setLaunchOpen(false)} aria-label="Close">
+                <CloseIcon size={14} />
+              </button>
+            </div>
+            <p className="mt-0 mb-4 text-[12px]" style={{ color: "var(--ink-3)" }}>
+              Starts a new T3 thread in a dedicated git worktree so it can open a clean PR.
+            </p>
+
+            {(() => {
+              const activeProfile = t3Settings.agents[launchAgent];
+              const provider = activeProfile?.provider ?? "claudeAgent";
+              const rKey = activeProfile?.reasoningKey ?? "effort";
+              const models = MODEL_SUGGESTIONS[provider] ?? [];
+              const reasonings = REASONING_OPTIONS[rKey] ?? ["low", "medium", "high"];
+              return (
+                <div className="flex flex-col gap-3.5">
+                  <div>
+                    <label className="mb-1 block text-[11px]" style={{ color: "var(--ink-3)" }}>
+                      Agent (from assignee: {ticket.assignee ?? "unassigned"})
+                    </label>
+                    <select
+                      value={launchAgent}
+                      onChange={(e) => handleLaunchAgentChange(e.target.value)}
+                      className="w-full rounded-md border px-3 py-2 text-[13px]"
+                      style={{ background: "var(--bg-paper)", borderColor: "var(--border-input)", color: "var(--ink)" }}
+                    >
+                      {Object.values(t3Settings.agents).map((a) => (
+                        <option key={a.assignee} value={a.assignee}>
+                          {a.assignee} — {a.label} ({a.provider})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1.5fr_1fr]">
+                    <div>
+                      <label className="mb-1 block text-[11px]" style={{ color: "var(--ink-3)" }}>
+                        Model override
+                      </label>
+                      <input
+                        list="launch-models"
+                        value={launchModel}
+                        onChange={(e) => setLaunchModel(e.target.value)}
+                        className="w-full rounded-md border px-2.5 py-2 font-mono text-[12px]"
+                        style={{ background: "var(--bg-paper)", borderColor: "var(--border-input)", color: "var(--ink)" }}
+                      />
+                      <datalist id="launch-models">
+                        {models.map((m) => (
+                          <option key={m} value={m} />
+                        ))}
+                      </datalist>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px]" style={{ color: "var(--ink-3)" }}>
+                        Reasoning ({rKey})
+                      </label>
+                      <select
+                        value={launchReasoning}
+                        onChange={(e) => setLaunchReasoning(e.target.value)}
+                        className="w-full rounded-md border px-2.5 py-2 text-[13px]"
+                        style={{ background: "var(--bg-paper)", borderColor: "var(--border-input)", color: "var(--ink)" }}
+                      >
+                        <option value="">Default</option>
+                        {reasonings.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-[11px]" style={{ color: "var(--ink-3)" }}>
+                        Worktree base ref (blank = auto)
+                      </label>
+                      <input
+                        value={launchBaseRef}
+                        onChange={(e) => setLaunchBaseRef(e.target.value)}
+                        placeholder="origin/main"
+                        className="w-full rounded-md border px-2.5 py-2 font-mono text-[12px]"
+                        style={{ background: "var(--bg-paper)", borderColor: "var(--border-input)", color: "var(--ink)" }}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px]" style={{ color: "var(--ink-3)" }}>
+                        New branch name
+                      </label>
+                      <input
+                        value={launchBranch}
+                        onChange={(e) => setLaunchBranch(e.target.value)}
+                        className="w-full rounded-md border px-2.5 py-2 font-mono text-[12px]"
+                        style={{ background: "var(--bg-paper)", borderColor: "var(--border-input)", color: "var(--ink)" }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-2 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLaunchOpen(false)}
+                      className="min-h-[40px] rounded-md border px-3.5 text-[13px]"
+                      style={{ borderColor: "var(--border-strong)" }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="min-h-[40px] rounded-md px-4 text-[13px] font-semibold"
+                      style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
+                    >
+                      {busy ? "Starting…" : "Start worktree thread"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </form>
+        </div>
+      )}
     </div>
   );
 }
@@ -729,6 +1012,10 @@ function formatEventSummary(type: string, data?: Record<string, unknown>): strin
       return "sent this back from review";
     case "ticket.updated":
       return "updated properties";
+    case "t3.launched":
+      return `started T3 worktree thread (${String(data?.model ?? "")})`;
+    case "t3.feedback_sent":
+      return "sent review feedback to T3 thread";
     default:
       return type;
   }

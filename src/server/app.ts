@@ -16,8 +16,9 @@ import {
   unregisterProject,
   updateRegistryPrefs,
 } from "../core/registry.js";
+import { getT3ThreadStatus, launchTicketInT3 } from "../core/t3.js";
 import { configPath, pathExists, readAllTickets, readConfig, readCycles } from "../core/storage.js";
-import type { ProjectSummary, ThemePreference } from "../core/types.js";
+import type { ProjectSummary, T3Settings, ThemePreference } from "../core/types.js";
 import { TriathlonError } from "../core/types.js";
 import { type LiveUpdateEvent, ProjectWatcher } from "./watcher.js";
 
@@ -245,9 +246,24 @@ export function createApp(options?: {
   });
 
   app.patch("/api/preferences", async (c) => {
-    const body = (await c.req.json()) as { theme?: ThemePreference; lastProjectId?: string | null };
+    const body = (await c.req.json()) as {
+      theme?: ThemePreference;
+      lastProjectId?: string | null;
+      t3?: Partial<T3Settings>;
+    };
     const updated = await updateRegistryPrefs(body);
     return c.json(updated);
+  });
+
+  app.get("/api/t3/settings", async (c) => {
+    const reg = await readRegistry();
+    return c.json(reg.t3);
+  });
+
+  app.patch("/api/t3/settings", async (c) => {
+    const body = (await c.req.json()) as Partial<T3Settings>;
+    const updated = await updateRegistryPrefs({ t3: body });
+    return c.json(updated.t3);
   });
 
   // Project snapshot & config
@@ -283,6 +299,24 @@ export function createApp(options?: {
     const store = await storeForParam(c.req.param("projectId"));
     const prompt = await store.buildAgentPrompt(c.req.param("ticketId"));
     return c.json({ prompt });
+  });
+
+  app.post("/api/projects/:projectId/tickets/:ticketId/t3/launch", async (c) => {
+    const store = await storeForParam(c.req.param("projectId"));
+    const body = await c.req.json().catch(() => ({}));
+    const result = await launchTicketInT3(store, c.req.param("ticketId"), body);
+    watcher.notify(store.projectId, "t3.launched");
+    return c.json(result, 201);
+  });
+
+  app.get("/api/projects/:projectId/tickets/:ticketId/t3/status", async (c) => {
+    const store = await storeForParam(c.req.param("projectId"));
+    const ticket = await store.getTicket(c.req.param("ticketId"));
+    if (!ticket.t3ThreadId) {
+      return c.json({ linked: false });
+    }
+    const status = await getT3ThreadStatus(ticket.t3ThreadId);
+    return c.json({ linked: true, ...status });
   });
 
   app.patch("/api/projects/:projectId/tickets/:ticketId", async (c) => {

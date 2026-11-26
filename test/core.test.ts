@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extractChecklist, parseTicketMarkdown, serializeTicketMarkdown, toggleChecklistInMarkdown } from "../src/core/markdown.js";
 import { initProject, ProjectStore } from "../src/core/project.js";
-import { readRegistry, unregisterProject } from "../src/core/registry.js";
+import { defaultT3Settings, readRegistry, unregisterProject } from "../src/core/registry.js";
+import { resolveAgentProfile, slugifyBranch } from "../src/core/t3.js";
 import { TriathlonError } from "../src/core/types.js";
 
 let sandbox: string;
@@ -58,6 +59,10 @@ describe("markdown round-trip and checklists", () => {
       blockedBy: ["DIS-0"],
       files: ["chapters/05.tex"],
       branch: "dis-1-eval",
+      t3ThreadId: "thread-abc",
+      t3Provider: "claudeAgent",
+      t3Model: "claude-opus-5-5",
+      t3Reasoning: "effort=medium",
       triage: "accepted",
       proposedBy: null,
       review: { state: "none" },
@@ -155,5 +160,56 @@ describe("ProjectStore workflow & review gate", () => {
     // Unregister keeps files intact
     expect(await unregisterProject(init.projectId)).toBe(true);
     expect((await readRegistry()).projects).toHaveLength(0);
+  });
+
+  it("maps card assignees to T3 providers, supports aliases and per-run overrides, and slugifies branches", () => {
+    const settings = defaultT3Settings();
+    const baseTicket = {
+      id: "SAY-3",
+      title: "Resolve port 8787 clash with T3 agent-tap",
+      description: "",
+      status: "todo",
+      priority: "urgent" as const,
+      estimate: 2,
+      labels: [],
+      assignee: "agent:agy",
+      cycleId: null,
+      rank: 1000,
+      blockedBy: [],
+      files: [],
+      branch: null,
+      t3ThreadId: null,
+      t3Provider: null,
+      t3Model: null,
+      t3Reasoning: null,
+      triage: "accepted" as const,
+      proposedBy: null,
+      review: { state: "none" as const },
+      checklist: [],
+      comments: [],
+      createdBy: "Roshan",
+      createdAt: "2026-11-26T00:00:00.000Z",
+      updatedAt: "2026-11-26T00:00:00.000Z",
+    };
+
+    const agy = resolveAgentProfile(baseTicket, settings);
+    expect(agy.provider).toBe("antigravity");
+    expect(agy.model).toBe("gemini-4-neon");
+    expect(agy.reasoningKey).toBe("thought_level");
+
+    const pi = resolveAgentProfile({ ...baseTicket, assignee: "agent:pi" }, settings);
+    expect(pi.provider).toBe("pi");
+    expect(pi.reasoningKey).toBe("thinking");
+
+    const overridden = resolveAgentProfile(baseTicket, settings, {
+      agent: "agent:claude",
+      model: "claude-sonnet-5-5",
+      reasoningValue: "high",
+    });
+    expect(overridden.provider).toBe("claudeAgent");
+    expect(overridden.model).toBe("claude-sonnet-5-5");
+    expect(overridden.reasoningValue).toBe("high");
+
+    expect(slugifyBranch(baseTicket.id, baseTicket.title)).toBe("say-3-resolve-port-8787-clash-with-t3-agent-ta");
   });
 });

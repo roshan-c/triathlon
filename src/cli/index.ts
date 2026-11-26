@@ -17,6 +17,7 @@ import {
   unregisterProject,
 } from "../core/registry.js";
 import { findProjectRoot, readConfig } from "../core/storage.js";
+import { launchTicketInT3 } from "../core/t3.js";
 import type { Priority, ReviewCheck, ReviewFileChange, Ticket } from "../core/types.js";
 import { displayActor, TriathlonError } from "../core/types.js";
 import { runMcpServer } from "../mcp/server.js";
@@ -415,6 +416,33 @@ program
     const prompt = await store.buildAgentPrompt(ticketId);
     if (json) return out({ ticketId, prompt }, true);
     out(prompt, false);
+  });
+
+program
+  .command("launch <ticketId>")
+  .description("Start a T3 Code thread in a new git worktree for a ticket (uses assignee's agent/model defaults)")
+  .option("--agent <assignee>", "Override agent (e.g. agent:claude, agent:agy, agent:pi, agent:codex)")
+  .option("--provider <id>", "Override T3 provider instance id")
+  .option("--model <slug>", "Override model slug")
+  .option("--reasoning <value>", "Override reasoning strength (effort / thought_level / thinking)")
+  .option("--base <ref>", "Base git ref for the new worktree (defaults to origin/<default>)")
+  .option("--branch <name>", "Branch name for the new worktree")
+  .action(async (ticketId: string, opts) => {
+    const { project, json } = globalOpts();
+    const store = await resolveStore(project);
+    const result = await launchTicketInT3(store, ticketId, {
+      agent: opts.agent,
+      provider: opts.provider,
+      model: opts.model,
+      reasoningValue: opts.reasoning,
+      baseRef: opts.base,
+      branch: opts.branch,
+    });
+    if (json) return out(result, true);
+    out(
+      `Launched ${result.ticket.id} in T3 Code (${result.provider} / ${result.model}${result.reasoning ? ` · ${result.reasoning}` : ""})\nThread: ${result.threadId}\nWorktree branch: ${result.branch} (from ${result.baseRef})`,
+      false,
+    );
   });
 
 program

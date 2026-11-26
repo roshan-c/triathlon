@@ -79,6 +79,10 @@ export interface Ticket {
   blockedBy: string[];
   files: string[];
   branch: string | null;
+  t3ThreadId: string | null;
+  t3Provider: string | null;
+  t3Model: string | null;
+  t3Reasoning: string | null;
   triage: TriageState;
   proposedBy: string | null;
   review: ReviewPacket;
@@ -216,7 +220,9 @@ export type EventType =
   | "cycle.created"
   | "cycle.started"
   | "cycle.completed"
-  | "cycle.scope_changed";
+  | "cycle.scope_changed"
+  | "t3.launched"
+  | "t3.feedback_sent";
 
 export interface BoardEvent {
   id: string;
@@ -250,10 +256,27 @@ export interface RegisteredProject {
 
 export type ThemePreference = "light" | "dark" | "system";
 
+export interface AgentModelConfig {
+  assignee: string;
+  label: string;
+  provider: string;
+  model: string;
+  reasoningKey: string;
+  reasoningValue: string;
+}
+
+export interface T3Settings {
+  defaultAgent: string;
+  defaultBaseRef: string;
+  sendBackToThread: boolean;
+  agents: Record<string, AgentModelConfig>;
+}
+
 export interface Registry {
   version: 1;
   lastProjectId: string | null;
   theme: ThemePreference;
+  t3: T3Settings;
   projects: RegisteredProject[];
 }
 
