@@ -234,7 +234,7 @@ export function ReviewInboxView({
       setNote("");
       await onRefresh();
     } catch (err) {
-      if (err instanceof ApiError && err.code === "PR_NOT_FOUND") {
+      if (err instanceof ApiError && (err.code === "PR_NOT_FOUND" || err.code === "PR_NOT_PUSHED")) {
         setAllowSkipMerge(true);
       }
       setError(err instanceof Error ? err.message : String(err));

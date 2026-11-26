@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { baseBranchName } from "./github.js";
 import type { ProjectStore } from "./project.js";
 import { readRegistry } from "./registry.js";
 import { appendEvent, readTicket, writeTicket } from "./storage.js";
@@ -185,14 +186,15 @@ export async function launchTicketInT3(
   const baseRef = await detectDefaultBaseRef(store.root, overrides?.baseRef || registry.t3.defaultBaseRef);
   const branch = overrides?.branch?.trim() || ticket.branch || slugifyBranch(ticket.id, ticket.title);
 
-  const basePrompt = await store.buildAgentPrompt(ticket.id);
+  const basePrompt = await store.buildAgentPrompt(ticket.id, { branch, baseBranch: baseRef });
   const prompt = [
     basePrompt,
     "",
     "## Worktree & PR Notes",
     `- You are running in a dedicated git worktree on branch \`${branch}\` (based on \`${baseRef}\`).`,
-    `- Keep commits clean and focused on ${ticket.id} so a clean PR can be opened when approved.`,
-    `- When finished and verified, call \`tri -P ${store.root} review request ${ticket.id} --summary "..." --by ${profile.assignee}\` (or use Triathlon MCP \`request_review\`).`,
+    `- Keep commits clean and focused on ${ticket.id}.`,
+    `- Before requesting review, push \`${branch}\` to \`origin\` and open a GitHub PR against \`${baseBranchName(baseRef)}\` (see the Triathlon Workflow above). Approving the review merges that PR.`,
+    `- Once the PR is open, call \`tri -P ${store.root} review request ${ticket.id} --summary "..." --by ${profile.assignee}\` (or use Triathlon MCP \`request_review\`).`,
   ].join("\n");
 
   const args = [

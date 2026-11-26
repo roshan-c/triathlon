@@ -236,6 +236,7 @@ export const api = {
       ticket: Ticket;
       status: "merged" | "waiting_ci" | "approved_only";
       pr: PrInfo | null;
+      prOpened?: boolean;
     }>(
       `/api/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/review/approve`,
       { method: "POST", body: JSON.stringify(body) },

@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { inspectPrForBranch, markPrReady, mergePrWithGh, type PrInfo } from "./github.js";
+import {
+  baseBranchName,
+  getLocalBranchStatus,
+  inspectPrForBranch,
+  markPrReady,
+  mergePrWithGh,
+  pushBranchAndOpenPr,
+  type PrInfo,
+} from "./github.js";
 import { toggleChecklistInMarkdown } from "./markdown.js";
 import { buildMetricsReport, calculateCycleMetrics } from "./metrics.js";
 import { projectIdForPath, registerProject } from "./registry.js";
@@ -850,8 +858,20 @@ export class ProjectStore {
 
   async approveAndMergeReview(
     ticketId: string,
-    options?: { note?: string; actor?: string; skipMerge?: boolean },
-  ): Promise<{ ticket: Ticket; status: "merged" | "waiting_ci" | "approved_only"; pr?: PrInfo | null }> {
+    options?: {
+      note?: string;
+      actor?: string;
+      skipMerge?: boolean;
+      /** Push an unpushed local branch and open its PR when none exists (default true). */
+      openPr?: boolean;
+      baseBranch?: string;
+    },
+  ): Promise<{
+    ticket: Ticket;
+    status: "merged" | "waiting_ci" | "approved_only";
+    pr?: PrInfo | null;
+    prOpened?: boolean;
+  }> {
     const [config, ticket] = await Promise.all([readConfig(this.root), readTicket(this.root, ticketId)]);
     const actor = options?.actor?.trim() || config.owner;
     if (config.reviewGate && isAgentActor(actor)) {
@@ -864,13 +884,46 @@ export class ProjectStore {
       return { ticket: saved, status: "approved_only", pr: null };
     }
 
-    const pr = await inspectPrForBranch(this.root, ticket.branch);
+    let pr = await inspectPrForBranch(this.root, ticket.branch);
+    let prOpened = false;
     if (!pr) {
-      throw new TriathlonError(
-        `No GitHub PR found for branch "${ticket.branch}". Push and open a PR first, or use Approve without merging.`,
-        "PR_NOT_FOUND",
-        409,
-      );
+      // Safety net: the agent committed locally but never pushed / opened a PR.
+      const baseBranch = baseBranchName(options?.baseBranch?.trim() || "main");
+      const local = await getLocalBranchStatus(this.root, ticket.branch, baseBranch);
+      if (!local.exists || local.ahead === 0) {
+        throw new TriathlonError(
+          local.exists
+            ? `No GitHub PR found for branch "${ticket.branch}", and it has no commits ahead of ${local.baseRef ?? baseBranch}. Use Approve without merging if there is nothing to merge.`
+            : `No GitHub PR found for branch "${ticket.branch}". Push and open a PR first, or use Approve without merging.`,
+          "PR_NOT_FOUND",
+          409,
+        );
+      }
+      if (options?.openPr === false) {
+        throw new TriathlonError(
+          `Branch "${ticket.branch}" has ${local.ahead} commit(s) ahead of ${local.baseRef} but no GitHub PR. Push it and open a PR, or use Approve without merging.`,
+          "PR_NOT_PUSHED",
+          409,
+        );
+      }
+      await pushBranchAndOpenPr(this.root, ticket.branch, {
+        baseBranch,
+        title: `${ticket.id}: ${ticket.title}`,
+        body: [
+          ticket.review.summary?.trim() || ticket.description.trim() || ticket.title,
+          "",
+          `Opened by Triathlon on approval of ${ticket.id} because the branch had not been pushed.`,
+        ].join("\n"),
+      });
+      pr = await inspectPrForBranch(this.root, ticket.branch);
+      if (!pr) {
+        throw new TriathlonError(
+          `Pushed "${ticket.branch}" and ran gh pr create, but no PR was found afterwards.`,
+          "PR_NOT_FOUND",
+          502,
+        );
+      }
+      prOpened = true;
     }
 
     if (pr.state === "MERGED") {
@@ -901,7 +954,7 @@ export class ProjectStore {
     }
 
     // If CI checks are still running, queue auto-merge and let SyncEngine complete it when green
-    if (pr.checks.overall === "pending") {
+    if (pr.checks.overall === "pending" || prOpened) {
       try {
         await mergePrWithGh(this.root, pr.number, { auto: true });
       } catch {
@@ -918,6 +971,14 @@ export class ProjectStore {
         prUrl: pr.url,
         mergeState: "waiting_ci",
       };
+      if (prOpened) {
+        ticket.comments.push({
+          id: randomUUID().slice(0, 8),
+          author: "triathlon",
+          body: `Branch \`${ticket.branch}\` had not been pushed, so Triathlon pushed it and opened PR #${pr.number} (${pr.url}). It will merge once CI passes.`,
+          createdAt: now,
+        });
+      }
       if (options?.note?.trim()) {
         ticket.comments.push({
           id: randomUUID().slice(0, 8),
@@ -928,7 +989,7 @@ export class ProjectStore {
       }
       ticket.updatedAt = now;
       const saved = await writeTicket(this.root, ticket);
-      return { ticket: saved, status: "waiting_ci", pr };
+      return { ticket: saved, status: "waiting_ci", pr, prOpened };
     }
 
     // All CI checks passed (or no checks configured) -> squash-merge now!
@@ -1187,7 +1248,7 @@ export class ProjectStore {
     return limit ? events.slice(-limit) : events;
   }
 
-  async buildAgentPrompt(ticketId: string): Promise<string> {
+  async buildAgentPrompt(ticketId: string, options?: { branch?: string; baseBranch?: string }): Promise<string> {
     const [config, ticket, allTickets] = await Promise.all([
       readConfig(this.root),
       readTicket(this.root, ticketId),
@@ -1215,6 +1276,12 @@ export class ProjectStore {
         ? ["", "## Previous Review Feedback", ticket.review.note.trim()]
         : [];
 
+    const branch = options?.branch?.trim() || ticket.branch;
+    const baseBranch = baseBranchName(options?.baseBranch?.trim() || "main");
+    const branchRef = branch ? `\`${branch}\`` : "your ticket branch";
+    const pushCmd = branch ? `git push -u origin ${branch}` : "git push -u origin HEAD";
+    const prCmd = `gh pr create --base ${baseBranch}${branch ? ` --head ${branch}` : ""} --title "${ticket.id}: ${ticket.title.replace(/"/g, '\\"')}" --body "..."`;
+
     const lines = [
       `Work on ticket **${ticket.id}: ${ticket.title}** in project ${config.name} (${this.root}).`,
       "",
@@ -1232,7 +1299,8 @@ export class ProjectStore {
       "## Triathlon Workflow",
       `1. Claim this ticket if not already claimed: \`tri -P "${this.root}" claim ${ticket.id} --by agent:<your-name>\` (or via Triathlon MCP \`claim_ticket\`).`,
       `2. As you satisfy checklist items, mark them done via \`tri -P "${this.root}" check ${ticket.id} <n>\` or MCP \`toggle_checklist_item\`.`,
-      `3. When finished and verified, request human review via \`tri -P "${this.root}" review request ${ticket.id} --summary "..."\` or MCP \`request_review\` (do not move directly to Done).`,
+      `3. When finished and verified, commit your work, push ${branchRef} (\`${pushCmd}\`), and open a GitHub PR against \`${baseBranch}\` (\`${prCmd}\`). If a PR for the branch already exists, just push to update it.`,
+      `4. Only after the PR is open, request human review via \`tri -P "${this.root}" review request ${ticket.id} --summary "..."\` or MCP \`request_review\` (do not move directly to Done). Approving the review squash-merges that PR.`,
     ];
     return lines.join("\n");
   }

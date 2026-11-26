@@ -256,3 +256,80 @@ export async function mergePrWithGh(
 export async function markPrReady(projectRoot: string, prNumber: number): Promise<void> {
   await runGh(["pr", "ready", String(prNumber)], projectRoot);
 }
+
+export interface LocalBranchStatus {
+  /** The branch exists as a local ref (e.g. held by a T3 worktree). */
+  exists: boolean;
+  /** Ref the ahead count was measured against (e.g. `origin/main`), or null if none resolved. */
+  baseRef: string | null;
+  /** Commits on the branch that are not on `baseRef`. */
+  ahead: number;
+}
+
+async function runGit(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 5 * 1024 * 1024 });
+  return stdout.trim();
+}
+
+/** Strips a remote prefix so `origin/main` becomes `main` (the name GitHub expects as a PR base). */
+export function baseBranchName(baseRef: string): string {
+  return baseRef.replace(/^(refs\/remotes\/)?origin\//, "").replace(/^refs\/heads\//, "");
+}
+
+/**
+ * Reports whether a ticket branch exists locally and how many commits it has beyond the base.
+ * The remote-tracking base is preferred because that is what a GitHub PR would be measured against.
+ */
+export async function getLocalBranchStatus(
+  projectRoot: string,
+  branch: string,
+  baseBranch = "main",
+): Promise<LocalBranchStatus> {
+  try {
+    await runGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectRoot);
+  } catch {
+    return { exists: false, baseRef: null, ahead: 0 };
+  }
+  const base = baseBranchName(baseBranch);
+  for (const ref of [`origin/${base}`, base]) {
+    try {
+      await runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], projectRoot);
+      const count = await runGit(["rev-list", "--count", `${ref}..refs/heads/${branch}`], projectRoot);
+      return { exists: true, baseRef: ref, ahead: Number.parseInt(count, 10) || 0 };
+    } catch {
+      // Try the next candidate base ref
+    }
+  }
+  return { exists: true, baseRef: null, ahead: 0 };
+}
+
+/** Pushes a local branch to `origin` and opens a GitHub PR for it. Returns the new PR's URL. */
+export async function pushBranchAndOpenPr(
+  projectRoot: string,
+  branch: string,
+  options: { title: string; body: string; baseBranch?: string },
+): Promise<string> {
+  try {
+    await runGit(["push", "--set-upstream", "origin", `refs/heads/${branch}:refs/heads/${branch}`], projectRoot);
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException & { stderr?: string };
+    const msg = (e.stderr || e.message || "git push failed").trim();
+    throw new TriathlonError(`Could not push branch "${branch}": ${msg}`, "PUSH_FAILED", 502);
+  }
+  const out = await runGh(
+    [
+      "pr",
+      "create",
+      "--head",
+      branch,
+      "--base",
+      baseBranchName(options.baseBranch ?? "main"),
+      "--title",
+      options.title,
+      "--body",
+      options.body,
+    ],
+    projectRoot,
+  );
+  return out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop() ?? "";
+}
