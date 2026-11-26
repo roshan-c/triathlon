@@ -1053,6 +1053,23 @@ export class ProjectStore {
       return dep ? `- ${dep.id}: ${dep.title} (${dep.status})` : `- ${id}`;
     });
 
+    const commentLines = ticket.comments.length
+      ? [
+          "",
+          "## Comments (read carefully and follow any instructions below)",
+          ...ticket.comments.flatMap((c) => [
+            "",
+            `### ${displayActor(c.author)} (${c.createdAt.slice(0, 16).replace("T", " ")} UTC)`,
+            c.body.trim(),
+          ]),
+        ]
+      : [];
+
+    const reviewFeedbackLines =
+      ticket.review.state === "changes_requested" && ticket.review.note
+        ? ["", "## Previous Review Feedback", ticket.review.note.trim()]
+        : [];
+
     const lines = [
       `Work on ticket **${ticket.id}: ${ticket.title}** in project ${config.name} (${this.root}).`,
       "",
@@ -1063,6 +1080,8 @@ export class ProjectStore {
       "",
       "## Description",
       ticket.description || "(No description provided.)",
+      ...commentLines,
+      ...reviewFeedbackLines,
       ...(blockers.length ? ["", "## Dependencies", ...blockers] : []),
       "",
       "## Triathlon Workflow",

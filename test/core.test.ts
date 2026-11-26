@@ -122,6 +122,11 @@ describe("ProjectStore workflow & review gate", () => {
     expect(proposed.triage).toBe("proposed");
 
     // Agent claims t1 and toggles first checklist item
+    await store.addComment(t1.id, "Use Europe/London timezone in the fixture.", "Roshan");
+    const promptWithComments = await store.buildAgentPrompt(t1.id);
+    expect(promptWithComments).toContain("## Comments");
+    expect(promptWithComments).toContain("Use Europe/London timezone in the fixture.");
+
     const claimed = await store.claimTicket(t1.id, "agent:claude", { branch: "dis-1-parser" });
     expect(claimed.status).toBe("in-progress");
     expect(claimed.assignee).toBe("agent:claude");
